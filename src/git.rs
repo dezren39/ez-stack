@@ -480,6 +480,26 @@ pub fn merge_base(a: &str, b: &str) -> Result<String> {
     run_git(&["merge-base", a, b])
 }
 
+pub fn merge_squash(branch: &str) -> Result<()> {
+    run_git(&["merge", "--squash", branch])?;
+    Ok(())
+}
+
+pub fn merge_no_ff(branch: &str) -> Result<()> {
+    run_git(&["merge", "--no-ff", branch, "-m", &format!("Merge branch '{branch}'")])?;
+    Ok(())
+}
+
+pub fn rename_branch(old: &str, new: &str) -> Result<()> {
+    run_git(&["branch", "-m", old, new])?;
+    Ok(())
+}
+
+pub fn update_branch_ref(branch: &str, target: &str) -> Result<()> {
+    run_git(&["branch", "-f", branch, target])?;
+    Ok(())
+}
+
 /// Returns true if `ancestor` is reachable from `descendant` (i.e. is an ancestor of it).
 /// Returns false if not, or if either ref does not exist.
 pub fn is_ancestor(ancestor: &str, descendant: &str) -> bool {
