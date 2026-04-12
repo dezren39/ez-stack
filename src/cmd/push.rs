@@ -203,8 +203,8 @@ pub fn run(
 
 /// Push-or-update logic shared with the `submit` command.
 ///
-/// Repo resolution order: `repo_override` (CLI --repo) > `state.repo` (config) > `branch.pr_repo` (stored from first push) > None.
-/// After a successful PR creation, the effective repo is stored in `branch.pr_repo` so future pushes reuse it.
+/// Repo resolution order: `repo_override` (CLI --repo) > `branch.pr_repo` (stored from first push) > `state.repo` (global config) > None.
+/// When `--repo` is explicitly passed, the value is stored in `branch.pr_repo` so future pushes reuse it.
 ///
 /// Returns the PR URL.
 pub fn push_or_update_pr(
@@ -217,15 +217,15 @@ pub fn push_or_update_pr(
     body_explicitly_set: bool,
     repo_override: Option<&str>,
 ) -> Result<String> {
-    // Resolve effective repo: CLI flag > config > stored per-branch > None
+    // Resolve effective repo: CLI flag > stored per-branch > global config > None
     let branch_pr_repo = state
         .get_branch(branch)
         .ok()
         .and_then(|m| m.pr_repo.clone());
     let effective_repo: Option<String> = repo_override
         .map(|s| s.to_string())
-        .or_else(|| state.repo.clone().filter(|s| !s.is_empty()))
-        .or(branch_pr_repo);
+        .or(branch_pr_repo)
+        .or_else(|| state.repo.clone().filter(|s| !s.is_empty()));
 
     // Collect upstream ancestor PRs for the stack section.
     // path_to_trunk returns [branch, ..., trunk]; we want ancestors only.
@@ -310,9 +310,9 @@ pub fn push_or_update_pr(
                 effective_repo.as_deref(),
             )?;
             state.get_branch_mut(branch)?.pr_number = Some(pr.number);
-            // Persist the repo used so future pushes reuse it automatically.
-            if effective_repo.is_some() {
-                state.get_branch_mut(branch)?.pr_repo = effective_repo.clone();
+            // Only persist pr_repo when --repo was explicitly passed on the CLI.
+            if let Some(r) = repo_override {
+                state.get_branch_mut(branch)?.pr_repo = Some(r.to_string());
             }
             ui::info(&format!("Created PR #{}: {}", pr.number, pr.url));
             pr.url
@@ -463,8 +463,8 @@ mod tests {
     }
 
     #[test]
-    fn repo_override_replaces_config_repo() {
-        // CLI --repo flag > config repo > branch pr_repo
+    fn repo_override_replaces_stored_and_config() {
+        // CLI --repo flag > stored pr_repo > config repo
         let mut state = StackState::new("main".to_string());
         state.repo = Some("config/repo".to_string());
         state.add_branch("feat/a", "main", "aaa", None, None);
@@ -474,14 +474,14 @@ mod tests {
         let branch_pr_repo = state.get_branch("feat/a").ok().and_then(|m| m.pr_repo.clone());
         let effective = repo_override
             .map(|s| s.to_string())
-            .or_else(|| state.repo.clone().filter(|s| !s.is_empty()))
-            .or(branch_pr_repo);
+            .or(branch_pr_repo)
+            .or_else(|| state.repo.clone().filter(|s| !s.is_empty()));
         assert_eq!(effective.as_deref(), Some("cli/override"));
     }
 
     #[test]
-    fn repo_resolution_config_overrides_stored() {
-        // No CLI flag: config repo > branch pr_repo
+    fn repo_resolution_stored_overrides_config() {
+        // No CLI flag: stored pr_repo > config repo
         let mut state = StackState::new("main".to_string());
         state.repo = Some("config/repo".to_string());
         state.add_branch("feat/a", "main", "aaa", None, None);
@@ -491,31 +491,30 @@ mod tests {
         let branch_pr_repo = state.get_branch("feat/a").ok().and_then(|m| m.pr_repo.clone());
         let effective = repo_override
             .map(|s| s.to_string())
-            .or_else(|| state.repo.clone().filter(|s| !s.is_empty()))
-            .or(branch_pr_repo);
-        assert_eq!(effective.as_deref(), Some("config/repo"));
-    }
-
-    #[test]
-    fn repo_resolution_falls_back_to_stored_pr_repo() {
-        // No CLI flag, no config repo: branch pr_repo is used
-        let mut state = StackState::new("main".to_string());
-        assert!(state.repo.is_none());
-        state.add_branch("feat/a", "main", "aaa", None, None);
-        state.get_branch_mut("feat/a").unwrap().pr_repo = Some("stored/repo".to_string());
-
-        let repo_override: Option<&str> = None;
-        let branch_pr_repo = state.get_branch("feat/a").ok().and_then(|m| m.pr_repo.clone());
-        let effective = repo_override
-            .map(|s| s.to_string())
-            .or_else(|| state.repo.clone().filter(|s| !s.is_empty()))
-            .or(branch_pr_repo);
+            .or(branch_pr_repo)
+            .or_else(|| state.repo.clone().filter(|s| !s.is_empty()));
         assert_eq!(effective.as_deref(), Some("stored/repo"));
     }
 
     #[test]
+    fn repo_resolution_falls_back_to_config() {
+        // No CLI flag, no stored pr_repo: config repo is used
+        let mut state = StackState::new("main".to_string());
+        state.repo = Some("config/repo".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+
+        let repo_override: Option<&str> = None;
+        let branch_pr_repo = state.get_branch("feat/a").ok().and_then(|m| m.pr_repo.clone());
+        let effective = repo_override
+            .map(|s| s.to_string())
+            .or(branch_pr_repo)
+            .or_else(|| state.repo.clone().filter(|s| !s.is_empty()));
+        assert_eq!(effective.as_deref(), Some("config/repo"));
+    }
+
+    #[test]
     fn repo_resolution_none_when_nothing_set() {
-        // No CLI flag, no config, no stored pr_repo: None
+        // No CLI flag, no stored, no config: None
         let mut state = StackState::new("main".to_string());
         state.add_branch("feat/a", "main", "aaa", None, None);
 
@@ -523,14 +522,14 @@ mod tests {
         let branch_pr_repo = state.get_branch("feat/a").ok().and_then(|m| m.pr_repo.clone());
         let effective = repo_override
             .map(|s| s.to_string())
-            .or_else(|| state.repo.clone().filter(|s| !s.is_empty()))
-            .or(branch_pr_repo);
+            .or(branch_pr_repo)
+            .or_else(|| state.repo.clone().filter(|s| !s.is_empty()));
         assert!(effective.is_none());
     }
 
     #[test]
     fn repo_resolution_skips_empty_config_string() {
-        // Config repo is empty string (old state format): should fall through to pr_repo
+        // Config repo is empty string (old state format): should fall through
         let mut state = StackState::new("main".to_string());
         state.repo = Some(String::new());
         state.add_branch("feat/a", "main", "aaa", None, None);
@@ -540,27 +539,44 @@ mod tests {
         let branch_pr_repo = state.get_branch("feat/a").ok().and_then(|m| m.pr_repo.clone());
         let effective = repo_override
             .map(|s| s.to_string())
-            .or_else(|| state.repo.clone().filter(|s| !s.is_empty()))
-            .or(branch_pr_repo);
+            .or(branch_pr_repo)
+            .or_else(|| state.repo.clone().filter(|s| !s.is_empty()));
         assert_eq!(effective.as_deref(), Some("stored/repo"));
     }
 
     #[test]
-    fn pr_repo_stored_after_creation() {
-        // Simulate what push_or_update_pr does after creating a PR
+    fn pr_repo_stored_only_when_cli_flag_passed() {
+        // Simulate: --repo was passed, so pr_repo gets stored
         let mut state = StackState::new("main".to_string());
         state.add_branch("feat/a", "main", "aaa", None, None);
         assert!(state.get_branch("feat/a").unwrap().pr_repo.is_none());
 
-        // After PR creation with effective_repo = Some("target/repo")
-        let effective_repo = Some("target/repo".to_string());
+        let repo_override: Option<&str> = Some("target/repo");
         state.get_branch_mut("feat/a").unwrap().pr_number = Some(42);
-        if effective_repo.is_some() {
-            state.get_branch_mut("feat/a").unwrap().pr_repo = effective_repo.clone();
+        if let Some(r) = repo_override {
+            state.get_branch_mut("feat/a").unwrap().pr_repo = Some(r.to_string());
         }
 
         assert_eq!(state.get_branch("feat/a").unwrap().pr_repo.as_deref(), Some("target/repo"));
-        assert_eq!(state.get_branch("feat/a").unwrap().pr_number, Some(42));
+    }
+
+    #[test]
+    fn pr_repo_not_stored_when_only_config_used() {
+        // Simulate: no --repo flag, PR created via config repo — pr_repo stays None
+        let mut state = StackState::new("main".to_string());
+        state.repo = Some("config/repo".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+
+        let repo_override: Option<&str> = None;
+        state.get_branch_mut("feat/a").unwrap().pr_number = Some(42);
+        if let Some(r) = repo_override {
+            state.get_branch_mut("feat/a").unwrap().pr_repo = Some(r.to_string());
+        }
+
+        assert!(
+            state.get_branch("feat/a").unwrap().pr_repo.is_none(),
+            "pr_repo should not be set when config repo was used without --repo flag"
+        );
     }
 
     #[test]
