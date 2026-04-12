@@ -285,7 +285,14 @@ pub fn push_or_update_pr(
             // Always append stack section to new PRs.
             let body = crate::stack_body::build_stack_body(&ancestors, raw_body);
 
-            let pr = github::create_pr(title, &body, parent, branch, draft)?;
+            let pr = github::create_pr_in_repo(
+                title,
+                &body,
+                parent,
+                branch,
+                draft,
+                state.repo.as_deref(),
+            )?;
             state.get_branch_mut(branch)?.pr_number = Some(pr.number);
             ui::info(&format!("Created PR #{}: {}", pr.number, pr.url));
             pr.url

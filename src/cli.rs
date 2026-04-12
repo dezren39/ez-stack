@@ -473,6 +473,23 @@ Examples:
   eval \"$(ez shell-init)\"")]
     ShellInit,
 
+    /// Configure fork-based workflow (fork upstream, add remote, set PR target)
+    #[command(after_help = "\
+Examples:
+  ez fork
+  ez fork --remote mine
+  ez fork --from user
+  ez fork --from user/custom-repo")]
+    Fork {
+        /// Name for the fork remote (default: fork)
+        #[arg(long)]
+        remote: Option<String>,
+
+        /// Add an existing fork by GitHub user or user/repo
+        #[arg(long)]
+        from: Option<String>,
+    },
+
     /// View and update ez settings for the current repo
     Config(ConfigArgs),
 

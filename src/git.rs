@@ -334,6 +334,22 @@ fn git_scope_pattern(pattern: &str) -> String {
     }
 }
 
+/// Check if a git remote exists.
+pub fn remote_exists(name: &str) -> bool {
+    run_git(&["remote", "get-url", name]).is_ok()
+}
+
+/// Get the URL of a git remote.
+pub fn remote_url(name: &str) -> Result<String> {
+    run_git(&["remote", "get-url", name])
+}
+
+/// Add a new git remote.
+pub fn add_remote(name: &str, url: &str) -> Result<()> {
+    run_git(&["remote", "add", name, url])?;
+    Ok(())
+}
+
 pub fn fetch(remote: &str) -> Result<()> {
     let args = fetch_args(remote);
     run_git_streaming(&args)?;

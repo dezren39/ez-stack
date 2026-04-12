@@ -224,6 +224,7 @@ fn run(cli: Cli) -> Result<()> {
             SkillCommands::Uninstall => cmd::skill::uninstall(),
         },
         Commands::ShellInit => cmd::shell_init::run(),
+        Commands::Fork { remote, from } => cmd::fork::run(remote.as_deref(), from.as_deref()),
         Commands::Config(args) => match args.command {
             ConfigCommands::List => cmd::config::list(),
             ConfigCommands::Get { key } => cmd::config::get(&key),
