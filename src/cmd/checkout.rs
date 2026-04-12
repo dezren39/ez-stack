@@ -316,4 +316,49 @@ mod tests {
         );
         assert!(!wt_map.contains_key("detached"));
     }
+
+    #[test]
+    fn switch_to_no_cd_required_prints_path_and_returns() {
+        let _guard = take_env_lock();
+        let repo = init_git_repo("checkout-no-cd-required");
+        let _cwd = CwdGuard::enter(&repo);
+
+        let parent_head = git::rev_parse("main").expect("main head");
+        git::create_branch_at("feat/test", "main").expect("create branch");
+
+        let mut state = StackState::new("main".to_string());
+        state.add_branch("feat/test", "main", &parent_head, None, None);
+        state.save().expect("save state");
+
+        // Create a worktree so the branch appears in wt_map.
+        let wt_path = git::worktree_path("feat/test").expect("worktree path");
+        git::worktree_add(&wt_path, "feat/test").expect("add worktree");
+
+        let wt_map = worktree_map();
+        assert!(wt_map.contains_key("feat/test"));
+
+        // With no_cd_required=true, switch_to should return Ok without error.
+        switch_to(&state, "feat/test", &wt_map, true).expect("no_cd_required switch should succeed");
+
+        // We should still be on main (no actual checkout happened).
+        assert_eq!(git::current_branch().expect("branch"), "main");
+    }
+
+    #[test]
+    fn switch_to_trunk_with_no_cd_required_does_plain_checkout() {
+        let _guard = take_env_lock();
+        let repo = init_git_repo("checkout-trunk-no-cd");
+        let _cwd = CwdGuard::enter(&repo);
+
+        git::create_branch("temp-branch").expect("create temp");
+
+        let state = StackState::new("main".to_string());
+        state.save().expect("save state");
+
+        let wt_map = worktree_map();
+
+        // Trunk is not in wt_map as a worktree target, so no_cd_required shouldn't matter.
+        switch_to(&state, "main", &wt_map, true).expect("switch to trunk should succeed");
+        assert_eq!(git::current_branch().expect("branch"), "main");
+    }
 }
