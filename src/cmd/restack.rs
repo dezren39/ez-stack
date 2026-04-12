@@ -30,6 +30,13 @@ pub fn run(force: bool) -> Result<()> {
 
     // Pre-flight checks: detect merge commits and redundant branches.
     let checks = preflight::check_all(&state);
+    if !checks.is_empty() {
+        ui::receipt(&serde_json::json!({
+            "cmd": "restack",
+            "action": "preflight",
+            "summary": preflight::summary(&checks),
+        }));
+    }
     if preflight::report_and_check(&checks, force) {
         bail!(EzError::UserMessage(
             "restack aborted — resolve the issues above or use `ez restack --force`".to_string()
