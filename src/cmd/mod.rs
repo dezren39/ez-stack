@@ -7,6 +7,7 @@ pub mod create;
 pub mod delete;
 pub mod diff;
 pub mod draft;
+pub mod fork;
 pub mod init;
 pub mod list;
 pub mod log;

@@ -33,11 +33,29 @@ pub fn body_from_file(path: &str) -> Result<String> {
 }
 
 pub fn create_pr(title: &str, body: &str, base: &str, head: &str, draft: bool) -> Result<PrInfo> {
+    create_pr_in_repo(title, body, base, head, draft, None)
+}
+
+pub fn create_pr_in_repo(
+    title: &str,
+    body: &str,
+    base: &str,
+    head: &str,
+    draft: bool,
+    repo: Option<&str>,
+) -> Result<PrInfo> {
     let mut args = vec![
         "pr", "create", "--title", title, "--body", body, "--base", base, "--head", head,
     ];
     if draft {
         args.push("--draft");
+    }
+    // Owned string to keep the borrow alive for the args slice.
+    let repo_arg: String;
+    if let Some(r) = repo {
+        repo_arg = r.to_string();
+        args.push("--repo");
+        args.push(&repo_arg);
     }
     let url = run_gh(&args)?;
 
@@ -191,6 +209,19 @@ pub fn edit_pr(pr_number: u64, title: Option<&str>, body: Option<&str>) -> Resul
 
 pub fn is_gh_authenticated() -> bool {
     run_gh(&["auth", "status"]).is_ok()
+}
+
+/// Extract "owner/repo" from a GitHub remote URL.
+/// Handles https://github.com/owner/repo.git and git@github.com:owner/repo.git
+pub fn repo_name_from_url(url: &str) -> Option<String> {
+    let cleaned = url.trim_end_matches(".git").trim_end_matches('/');
+    if let Some(rest) = cleaned.strip_prefix("https://github.com/") {
+        Some(rest.to_string())
+    } else if let Some(rest) = cleaned.strip_prefix("git@github.com:") {
+        Some(rest.to_string())
+    } else {
+        None
+    }
 }
 
 pub fn repo_name() -> Result<String> {
@@ -595,5 +626,37 @@ exit 0
         let _path = PathGuard::install(&fake_dir);
 
         assert_eq!(get_ci_status("feature"), "");
+    }
+
+    #[test]
+    fn repo_name_from_url_parses_https() {
+        assert_eq!(
+            repo_name_from_url("https://github.com/user/repo.git"),
+            Some("user/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn repo_name_from_url_parses_https_without_dot_git() {
+        assert_eq!(
+            repo_name_from_url("https://github.com/user/repo"),
+            Some("user/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn repo_name_from_url_parses_ssh() {
+        assert_eq!(
+            repo_name_from_url("git@github.com:user/repo.git"),
+            Some("user/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn repo_name_from_url_returns_none_for_non_github() {
+        assert_eq!(
+            repo_name_from_url("https://gitlab.com/user/repo.git"),
+            None
+        );
     }
 }
