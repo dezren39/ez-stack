@@ -263,4 +263,68 @@ mod tests {
         assert_eq!(s["stale_metadata"], 1);
         assert_eq!(s["needs_restack"], 2);
     }
+
+    #[test]
+    fn summary_empty_checks() {
+        let s = summary(&[]);
+        assert_eq!(s["branches_checked"], 0);
+        assert_eq!(s["merge_commits"], 0);
+        assert_eq!(s["redundant_branches"], 0);
+        assert_eq!(s["stale_metadata"], 0);
+        assert_eq!(s["needs_restack"], 0);
+    }
+
+    #[test]
+    fn report_and_check_blocks_on_both_merge_and_stale() {
+        let checks = vec![BranchCheck {
+            branch: "feat/both".to_string(),
+            parent: "main".to_string(),
+            merge_commits: 1,
+            all_redundant: false,
+            metadata_stale: true,
+            needs_restack: true,
+        }];
+        assert!(report_and_check(&checks, false));
+        // Force overrides both
+        assert!(!report_and_check(&checks, true));
+    }
+
+    #[test]
+    fn report_and_check_multiple_branches_one_blocking() {
+        let checks = vec![
+            BranchCheck {
+                branch: "feat/clean".to_string(),
+                parent: "main".to_string(),
+                merge_commits: 0,
+                all_redundant: true,
+                metadata_stale: false,
+                needs_restack: false,
+            },
+            BranchCheck {
+                branch: "feat/dirty".to_string(),
+                parent: "feat/clean".to_string(),
+                merge_commits: 5,
+                all_redundant: false,
+                metadata_stale: false,
+                needs_restack: true,
+            },
+        ];
+        // One blocking branch should block the whole operation
+        assert!(report_and_check(&checks, false));
+        assert!(!report_and_check(&checks, true));
+    }
+
+    #[test]
+    fn report_and_check_needs_restack_only_is_not_blocking() {
+        let checks = vec![BranchCheck {
+            branch: "feat/stale".to_string(),
+            parent: "main".to_string(),
+            merge_commits: 0,
+            all_redundant: false,
+            metadata_stale: false,
+            needs_restack: true,
+        }];
+        // needs_restack alone is not blocking — it's what restack is FOR.
+        assert!(!report_and_check(&checks, false));
+    }
 }
