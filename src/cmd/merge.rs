@@ -145,7 +145,11 @@ fn merge_branch(
     })
 }
 
-pub fn run(method: &str, yes: bool, stack: bool) -> Result<()> {
+pub fn run(method: &str, yes: bool, stack: bool, local: bool, strategy: &str, into: Option<&str>, force: bool) -> Result<()> {
+    if local {
+        return run_local(strategy, into, force);
+    }
+
     let mut state = StackState::load()?;
     if let Some(root) = git::current_linked_worktree_root()? {
         ui::linked_worktree_warning(&root);
@@ -217,6 +221,109 @@ pub fn run(method: &str, yes: bool, stack: bool) -> Result<()> {
     } else {
         ui::success("Merge complete");
     }
+
+    Ok(())
+}
+
+fn run_local(strategy: &str, into: Option<&str>, force: bool) -> Result<()> {
+    let mut state = StackState::load()?;
+    if let Some(root) = git::current_linked_worktree_root()? {
+        ui::linked_worktree_warning(&root);
+    }
+    let current = git::current_branch()?;
+
+    if state.is_trunk(&current) {
+        bail!(EzError::OnTrunk);
+    }
+    if !state.is_managed(&current) {
+        bail!(EzError::BranchNotInStack(current.clone()));
+    }
+
+    let target = into
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            state
+                .get_branch(&current)
+                .map(|m| m.parent.clone())
+                .unwrap_or_else(|_| "main".to_string())
+        });
+
+    let current_root = git::repo_root()?;
+
+    match strategy {
+        "squash" => {
+            git::checkout(&target)?;
+            git::merge_squash(&current)?;
+            let msg = format!("squash: {current}");
+            git::commit(&msg)?;
+            ui::success(&format!("Squashed `{current}` into `{target}`"));
+        }
+        "rebase" => {
+            let success = git::rebase(&target, &current)?;
+            if !success {
+                bail!(EzError::UserMessage(format!(
+                    "Rebase of `{current}` onto `{target}` failed due to conflicts — resolve manually"
+                )));
+            }
+            git::checkout(&target)?;
+            git::fast_forward_merge(&current)?;
+            ui::success(&format!("Rebased `{current}` into `{target}`"));
+        }
+        "merge" => {
+            if !force {
+                ui::warn("Creating a merge commit. This will cause rebase conflicts if child branches are restacked later.");
+                ui::hint("Only use --strategy merge if this is a terminal branch. Use --strategy squash (default) for stacks.");
+                ui::hint("Use --force to suppress this warning.");
+                bail!(EzError::UserMessage(
+                    "merge aborted — use --force or --strategy squash".to_string(),
+                ));
+            }
+            git::checkout(&target)?;
+            git::merge_no_ff(&current)?;
+            ui::success(&format!("Merged `{current}` into `{target}` (merge commit)"));
+        }
+        other => {
+            bail!(EzError::UserMessage(format!("Unknown strategy: {other}")));
+        }
+    }
+
+    // Reparent children of current branch to target
+    let children = state.children_of(&current);
+    let new_parent_head = git::rev_parse(&target)?;
+    for child in &children {
+        let child_meta = state.get_branch_mut(child)?;
+        child_meta.parent = target.clone();
+        child_meta.parent_head = new_parent_head.clone();
+    }
+
+    // Remove the merged branch from state and delete it
+    state.remove_branch(&current);
+    state.save()?;
+    let _ = git::delete_branch(&current, true);
+
+    // Handle worktree cleanup
+    if let Ok(Some(wt_path)) = git::branch_checked_out_elsewhere(&current, &current_root) {
+        if let Err(e) = git::worktree_remove(&wt_path) {
+            ui::warn(&format!("Could not remove worktree: {e}"));
+        }
+    }
+
+    if !children.is_empty() {
+        ui::info(&format!(
+            "Reparented {} child branch(es) to `{target}`",
+            children.len()
+        ));
+        ui::hint("Run `ez restack` to update child branches");
+    }
+
+    ui::receipt(&serde_json::json!({
+        "cmd": "merge",
+        "action": "local",
+        "branch": current,
+        "into": target,
+        "strategy": strategy,
+        "children_reparented": children.len(),
+    }));
 
     Ok(())
 }

@@ -387,16 +387,19 @@ Examples:
         force: bool,
     },
 
-    /// Merge the bottom PR of the current stack via GitHub
+    /// Merge the bottom PR of the current stack via GitHub, or merge locally with --local
     #[command(after_help = "\
 Examples:
   ez merge
   ez merge --yes
   ez merge --stack --yes
   ez merge --method squash
-  ez merge --method rebase")]
+  ez merge --method rebase
+  ez merge --local
+  ez merge --local --strategy rebase
+  ez merge --local --into main")]
     Merge {
-        /// Merge method: merge, squash, or rebase
+        /// Merge method for GitHub merge: merge, squash, or rebase
         #[arg(long, default_value = "squash")]
         method: String,
 
@@ -404,9 +407,39 @@ Examples:
         #[arg(short, long)]
         yes: bool,
 
-        /// Merge the current linear stack bottom-to-top
-        #[arg(long)]
+        /// Merge the current linear stack bottom-to-top (GitHub only)
+        #[arg(long, conflicts_with = "local")]
         stack: bool,
+
+        /// Merge locally without GitHub (squash by default)
+        #[arg(long)]
+        local: bool,
+
+        /// Local merge strategy: squash (default), rebase, or merge
+        #[arg(long, default_value = "squash", requires = "local")]
+        strategy: String,
+
+        /// Target branch to merge into (default: parent)
+        #[arg(long, requires = "local")]
+        into: Option<String>,
+
+        /// Force merge even with warnings (e.g., merge strategy)
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Fold a range of branches into one (squash commits)
+    #[command(after_help = "\
+Examples:
+  ez fold feat/a..feat/c
+  ez fold feat/a..feat/c --name feat/combined")]
+    Fold {
+        /// Branch range to fold (e.g., feat/a..feat/c)
+        range: String,
+
+        /// Name for the surviving branch (default: bottom of range)
+        #[arg(long)]
+        name: Option<String>,
     },
 
     /// Edit the PR for the current branch
@@ -885,10 +918,11 @@ mod tests {
             .expect("parse merge");
 
         match cli.command {
-            Commands::Merge { method, yes, stack } => {
+            Commands::Merge { method, yes, stack, local, .. } => {
                 assert_eq!(method, "rebase");
                 assert!(yes);
                 assert!(stack);
+                assert!(!local);
             }
             _ => panic!("expected merge command"),
         }
