@@ -53,9 +53,10 @@ pub fn run(
     stage_all: bool,
     stage_all_files: bool,
     commit_message: Option<&str>,
+    repo_override: Option<&str>,
 ) -> Result<()> {
     if stack {
-        return crate::cmd::submit::run(draft, no_draft, title, body, body_file);
+        return crate::cmd::submit::run(draft, no_draft, title, body, body_file, repo_override);
     }
 
     if let Some(root) = git::current_linked_worktree_root()? {
@@ -104,6 +105,11 @@ pub fn run(
 
     let mut state = StackState::load()?;
     let current = git::current_branch()?;
+
+    // Apply --repo override (CLI flag takes precedence over config).
+    if let Some(r) = repo_override {
+        state.repo = Some(r.to_string());
+    }
 
     if state.is_trunk(&current) {
         bail!(EzError::OnTrunk);
@@ -440,5 +446,44 @@ mod tests {
         let config_no_pr: Option<bool> = None;
         let skip = no_pr || config_no_pr.unwrap_or(false);
         assert!(!skip, "default should be false");
+    }
+
+    #[test]
+    fn repo_override_replaces_config_repo() {
+        let mut state = StackState::new("main".to_string());
+        state.repo = Some("config/repo".to_string());
+
+        // Simulate --repo flag override
+        let repo_override: Option<&str> = Some("cli/override");
+        if let Some(r) = repo_override {
+            state.repo = Some(r.to_string());
+        }
+        assert_eq!(state.repo.as_deref(), Some("cli/override"));
+    }
+
+    #[test]
+    fn repo_override_none_preserves_config() {
+        let mut state = StackState::new("main".to_string());
+        state.repo = Some("config/repo".to_string());
+
+        // No --repo flag: config value preserved
+        let repo_override: Option<&str> = None;
+        if let Some(r) = repo_override {
+            state.repo = Some(r.to_string());
+        }
+        assert_eq!(state.repo.as_deref(), Some("config/repo"));
+    }
+
+    #[test]
+    fn repo_override_sets_when_config_is_none() {
+        let mut state = StackState::new("main".to_string());
+        assert!(state.repo.is_none());
+
+        // --repo flag sets repo when config has none
+        let repo_override: Option<&str> = Some("cli/repo");
+        if let Some(r) = repo_override {
+            state.repo = Some(r.to_string());
+        }
+        assert_eq!(state.repo.as_deref(), Some("cli/repo"));
     }
 }

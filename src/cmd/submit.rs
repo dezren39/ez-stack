@@ -22,11 +22,18 @@ pub fn run(
     title: Option<&str>,
     body: Option<&str>,
     body_file: Option<&str>,
+    repo_override: Option<&str>,
 ) -> Result<()> {
     let mut state = StackState::load()?;
     if let Some(root) = git::current_linked_worktree_root()? {
         ui::linked_worktree_warning(&root);
     }
+
+    // Apply --repo override (CLI flag takes precedence over config).
+    if let Some(r) = repo_override {
+        state.repo = Some(r.to_string());
+    }
+
     let current = git::current_branch()?;
 
     if state.is_trunk(&current) {

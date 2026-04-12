@@ -157,6 +157,7 @@ fn run(cli: Cli) -> Result<()> {
             stage_all,
             stage_all_files,
             message,
+            repo,
         } => cmd::push::run(
             draft,
             no_draft,
@@ -169,6 +170,7 @@ fn run(cli: Cli) -> Result<()> {
             stage_all,
             stage_all_files,
             message.as_deref(),
+            repo.as_deref(),
         ),
         Commands::Submit {
             draft,
@@ -176,12 +178,14 @@ fn run(cli: Cli) -> Result<()> {
             title,
             body,
             body_file,
+            repo,
         } => cmd::submit::run(
             draft,
             no_draft,
             title.as_deref(),
             body.as_deref(),
             body_file.as_deref(),
+            repo.as_deref(),
         ),
         Commands::Sync {
             dry_run,

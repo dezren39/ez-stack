@@ -138,7 +138,8 @@ Examples:
   ez push --draft
   ez push --stack
   ez push -am \"feat: add auth\"
-  ez push -Am \"feat: add auth and new snapshots\"")]
+  ez push -Am \"feat: add auth and new snapshots\"
+  ez push --repo owner/repo")]
     Push {
         /// Create a draft PR
         #[arg(long, conflicts_with = "no_pr")]
@@ -188,6 +189,10 @@ Examples:
         /// Commit with this message before pushing
         #[arg(short = 'm', long)]
         message: Option<String>,
+
+        /// Target repository for PR creation (owner/repo), overrides config
+        #[arg(long)]
+        repo: Option<String>,
     },
 
     /// Push and create/update PRs for the entire stack
@@ -195,6 +200,7 @@ Examples:
 Examples:
   ez submit
   ez submit --draft
+  ez submit --repo owner/repo
 
 Note: --draft only affects newly created PRs. Existing PRs are not changed.
 Use `ez ready` to undraft an existing PR.")]
@@ -218,6 +224,10 @@ Use `ez ready` to undraft an existing PR.")]
         /// PR body from file
         #[arg(long)]
         body_file: Option<String>,
+
+        /// Target repository for PR creation (owner/repo), overrides config
+        #[arg(long)]
+        repo: Option<String>,
     },
 
     /// Fetch trunk, detect merged PRs, clean up, and restack
@@ -868,6 +878,65 @@ mod tests {
                 assert!(stack);
             }
             _ => panic!("expected merge command"),
+        }
+    }
+
+    #[test]
+    fn parses_push_repo_flag() {
+        let cli = Cli::try_parse_from(["ez", "push", "--repo", "owner/repo"])
+            .expect("parse push --repo");
+
+        match cli.command {
+            Commands::Push { repo, no_pr, .. } => {
+                assert_eq!(repo.as_deref(), Some("owner/repo"));
+                assert!(!no_pr);
+            }
+            _ => panic!("expected push command"),
+        }
+    }
+
+    #[test]
+    fn parses_push_repo_with_other_flags() {
+        let cli = Cli::try_parse_from([
+            "ez", "push", "--draft", "--repo", "user/fork-repo", "--title", "my pr",
+        ])
+        .expect("parse push --repo with other flags");
+
+        match cli.command {
+            Commands::Push {
+                repo, draft, title, ..
+            } => {
+                assert_eq!(repo.as_deref(), Some("user/fork-repo"));
+                assert!(draft);
+                assert_eq!(title.as_deref(), Some("my pr"));
+            }
+            _ => panic!("expected push command"),
+        }
+    }
+
+    #[test]
+    fn parses_submit_repo_flag() {
+        let cli = Cli::try_parse_from(["ez", "submit", "--repo", "upstream/repo"])
+            .expect("parse submit --repo");
+
+        match cli.command {
+            Commands::Submit { repo, draft, .. } => {
+                assert_eq!(repo.as_deref(), Some("upstream/repo"));
+                assert!(!draft);
+            }
+            _ => panic!("expected submit command"),
+        }
+    }
+
+    #[test]
+    fn push_repo_defaults_to_none() {
+        let cli = Cli::try_parse_from(["ez", "push"]).expect("parse push without --repo");
+
+        match cli.command {
+            Commands::Push { repo, .. } => {
+                assert!(repo.is_none(), "--repo should default to None");
+            }
+            _ => panic!("expected push command"),
         }
     }
 }
