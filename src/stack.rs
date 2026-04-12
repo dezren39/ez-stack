@@ -22,6 +22,10 @@ pub struct BranchMeta {
     pub parent_head: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr_number: Option<u64>,
+    /// Repository (owner/name) this branch's PR was created in.
+    /// Stored on first push so future pushes reuse the same target.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_repo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -104,6 +108,7 @@ impl StackState {
                 parent: parent.to_string(),
                 parent_head: parent_head.to_string(),
                 pr_number: None,
+                pr_repo: None,
                 scope,
                 scope_mode,
             },

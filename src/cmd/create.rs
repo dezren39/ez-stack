@@ -239,6 +239,7 @@ mod tests {
                 parent: "main".to_string(),
                 parent_head: "abc".to_string(),
                 pr_number: None,
+                pr_repo: None,
                 scope: None,
                 scope_mode: None,
             },

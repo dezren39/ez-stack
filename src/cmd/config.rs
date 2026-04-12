@@ -453,4 +453,33 @@ mod tests {
         assert_eq!(state.no_pr, None);
         assert_eq!(state.rerere, None);
     }
+
+    #[test]
+    fn backward_compat_branch_without_pr_repo() {
+        let _guard = take_env_lock();
+        let repo = init_git_repo("config-compat-pr-repo");
+        let _cwd = CwdGuard::enter(&repo);
+
+        // Write state with a branch that has no pr_repo field (pre-fork era)
+        let dir = StackState::meta_dir().unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let old_json = r#"{
+            "trunk": "main",
+            "remote": "origin",
+            "branches": {
+                "feat/old": {
+                    "name": "feat/old",
+                    "parent": "main",
+                    "parent_head": "abc123",
+                    "pr_number": 42
+                }
+            }
+        }"#;
+        std::fs::write(StackState::state_path().unwrap(), old_json).unwrap();
+
+        let state = StackState::load().expect("should load old branch format");
+        let branch = state.get_branch("feat/old").expect("branch should exist");
+        assert_eq!(branch.pr_number, Some(42));
+        assert_eq!(branch.pr_repo, None, "pr_repo should default to None for old branches");
+    }
 }

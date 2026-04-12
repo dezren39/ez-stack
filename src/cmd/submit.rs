@@ -29,11 +29,6 @@ pub fn run(
         ui::linked_worktree_warning(&root);
     }
 
-    // Apply --repo override (CLI flag takes precedence over config).
-    if let Some(r) = repo_override {
-        state.repo = Some(r.to_string());
-    }
-
     let current = git::current_branch()?;
 
     if state.is_trunk(&current) {
@@ -90,6 +85,7 @@ pub fn run(
             title,
             resolved_body.as_deref(),
             body_explicitly_set,
+            repo_override,
         )?;
 
         let pr_number = state.get_branch(branch).ok().and_then(|m| m.pr_number);
