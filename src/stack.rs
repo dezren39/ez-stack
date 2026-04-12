@@ -89,6 +89,15 @@ impl StackState {
         git::default_remote()
     }
 
+    /// Resolve the effective PR target repo for a branch.
+    /// Priority: branch.pr_repo > state.repo (non-empty) > None.
+    pub fn effective_pr_repo(&self, branch: &str) -> Option<String> {
+        self.branches
+            .get(branch)
+            .and_then(|m| m.pr_repo.clone())
+            .or_else(|| self.repo.clone().filter(|s| !s.is_empty()))
+    }
+
     /// Resolve the effective global remote (state.remote with fallback to git default).
     pub fn effective_remote(&self) -> String {
         if !self.remote.is_empty() && git::remote_exists(&self.remote) {
@@ -478,5 +487,44 @@ mod tests {
             err.to_string().contains("ambiguous"),
             "unexpected error: {err:#}"
         );
+    }
+
+    #[test]
+    fn effective_pr_repo_prefers_branch_over_config() {
+        let mut state = StackState::new("main".to_string());
+        state.repo = Some("config/repo".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+        state.get_branch_mut("feat/a").unwrap().pr_repo = Some("branch/repo".to_string());
+        assert_eq!(state.effective_pr_repo("feat/a").as_deref(), Some("branch/repo"));
+    }
+
+    #[test]
+    fn effective_pr_repo_falls_back_to_config() {
+        let mut state = StackState::new("main".to_string());
+        state.repo = Some("config/repo".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+        assert_eq!(state.effective_pr_repo("feat/a").as_deref(), Some("config/repo"));
+    }
+
+    #[test]
+    fn effective_pr_repo_none_when_nothing_set() {
+        let mut state = StackState::new("main".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+        assert!(state.effective_pr_repo("feat/a").is_none());
+    }
+
+    #[test]
+    fn effective_pr_repo_skips_empty_config() {
+        let mut state = StackState::new("main".to_string());
+        state.repo = Some(String::new());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+        assert!(state.effective_pr_repo("feat/a").is_none());
+    }
+
+    #[test]
+    fn effective_pr_repo_unknown_branch_falls_back_to_config() {
+        let mut state = StackState::new("main".to_string());
+        state.repo = Some("config/repo".to_string());
+        assert_eq!(state.effective_pr_repo("nonexistent").as_deref(), Some("config/repo"));
     }
 }

@@ -122,17 +122,21 @@ pub fn run(json: bool) -> Result<()> {
         .collect();
 
     // One API call for all CI statuses (instead of N sequential gh calls).
+    // Use state.repo for bulk fetch so fork workflows query the upstream repo.
     let has_any_branches = !branch_specs.is_empty();
+    let bulk_repo: Option<String> = state.repo.clone().filter(|s| !s.is_empty());
+    let pr_repo = bulk_repo.clone();
+    let ci_repo = bulk_repo;
     let pr_handle = thread::spawn(move || {
         if has_any_branches {
-            github::get_all_pr_statuses()
+            github::get_all_pr_statuses_in_repo(pr_repo.as_deref())
         } else {
             HashMap::new()
         }
     });
     let ci_handle = thread::spawn(move || {
         if has_any_branches {
-            github::get_all_ci_statuses()
+            github::get_all_ci_statuses_in_repo(ci_repo.as_deref())
         } else {
             HashMap::new()
         }

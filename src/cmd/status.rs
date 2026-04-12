@@ -61,18 +61,23 @@ pub fn run(json: bool) -> Result<()> {
             .map(|tip| tip != meta.parent_head)
             .unwrap_or(false);
 
-        let pr_status = github::get_pr_status(&current).unwrap_or(None);
+        let pr_status = github::get_pr_status_in_repo(&current, state.effective_pr_repo(&current).as_deref()).unwrap_or(None);
         let pr_number_val: serde_json::Value = match meta.pr_number {
             Some(n) => serde_json::Value::Number(n.into()),
             None => serde_json::Value::Null,
         };
         let pr_url_val: serde_json::Value = match meta.pr_number {
-            Some(n) => match github::repo_name().ok() {
-                Some(repo) => {
-                    serde_json::Value::String(format!("https://github.com/{repo}/pull/{n}"))
+            Some(n) => {
+                // Prefer the branch's PR repo, then fall back to repo_name().
+                let repo_opt = state.effective_pr_repo(&current)
+                    .or_else(|| github::repo_name().ok());
+                match repo_opt {
+                    Some(repo) => {
+                        serde_json::Value::String(format!("https://github.com/{repo}/pull/{n}"))
+                    }
+                    None => serde_json::Value::Null,
                 }
-                None => serde_json::Value::Null,
-            },
+            }
             None => serde_json::Value::Null,
         };
         let pr_state_val: serde_json::Value = match meta.pr_number {
@@ -212,7 +217,8 @@ pub fn run(json: bool) -> Result<()> {
 
     // PR status
     if let Some(pr_number) = meta.pr_number {
-        match github::get_pr_status(&current) {
+        let effective_repo = state.effective_pr_repo(&current);
+        match github::get_pr_status_in_repo(&current, effective_repo.as_deref()) {
             Ok(Some(pr)) => {
                 let badge = ui::pr_badge(pr.number, &pr.state, pr.is_draft);
                 let state_label = if pr.is_draft {

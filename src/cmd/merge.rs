@@ -36,7 +36,8 @@ fn merge_targets(state: &StackState, current: &str, stack: bool) -> Result<Vec<M
                     "Branch `{branch}` has no associated PR — run `ez submit` first"
                 ))),
             };
-            let title = github::get_pr_status(&branch)?
+            let effective_repo = state.effective_pr_repo(&branch);
+            let title = github::get_pr_status_in_repo(&branch, effective_repo.as_deref())?
                 .map(|pr| pr.title)
                 .unwrap_or_else(|| "(unknown)".to_string());
             Ok(MergeTarget {
@@ -56,9 +57,10 @@ fn merge_branch(
 ) -> Result<MergeOutcome> {
     let trunk = state.trunk.clone();
     let remote = state.remote.clone();
+    let effective_repo = state.effective_pr_repo(branch);
 
     let sp = ui::spinner(&format!("Merging PR #{pr_number}..."));
-    github::merge_pr(pr_number, method)?;
+    github::merge_pr_in_repo(pr_number, method, effective_repo.as_deref())?;
     sp.finish_and_clear();
     ui::info(&format!("Merged PR #{pr_number} for `{branch}`"));
 
@@ -66,8 +68,9 @@ fn merge_branch(
     for child_name in &children {
         ui::info(&format!("Reparented `{child_name}` onto `{trunk}`"));
 
+        let child_repo = state.effective_pr_repo(child_name);
         if let Some(child_pr) = state.get_branch(child_name)?.pr_number
-            && let Err(e) = github::update_pr_base(child_pr, &trunk)
+            && let Err(e) = github::update_pr_base_in_repo(child_pr, &trunk, child_repo.as_deref())
         {
             ui::warn(&format!("Failed to update PR base for `{child_name}`: {e}"));
         }

@@ -20,8 +20,9 @@ pub fn run() -> Result<()> {
             "No PR found for `{current}` — run `ez push` to create one first"
         )));
     }
+    let effective_repo = state.effective_pr_repo(&current);
 
     ui::success(&format!("Opened PR for `{current}`"));
-    github::open_pr_in_browser(&current)?;
+    github::open_pr_in_browser_in_repo(&current, effective_repo.as_deref())?;
     Ok(())
 }

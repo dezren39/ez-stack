@@ -132,11 +132,18 @@ pub fn get_pr_status_in_repo(branch: &str, repo: Option<&str>) -> Result<Option<
 }
 
 pub fn get_all_pr_statuses() -> std::collections::HashMap<String, PrInfo> {
+    get_all_pr_statuses_in_repo(None)
+}
+
+pub fn get_all_pr_statuses_in_repo(repo: Option<&str>) -> std::collections::HashMap<String, PrInfo> {
     let mut map = std::collections::HashMap::new();
     let mut page = 1;
 
     loop {
-        let route = format!("repos/{{owner}}/{{repo}}/pulls?state=all&per_page=100&page={page}");
+        let route = match repo {
+            Some(r) => format!("repos/{r}/pulls?state=all&per_page=100&page={page}"),
+            None => format!("repos/{{owner}}/{{repo}}/pulls?state=all&per_page=100&page={page}"),
+        };
         let output = run_gh(&["api", &route]);
 
         let Ok(json_str) = output else {
@@ -355,10 +362,18 @@ pub fn open_pr_in_browser_in_repo(branch: &str, repo: Option<&str>) -> Result<()
 /// Returns a map of branch_name → status emoji (✓/✗/⏳).
 /// Uses the most recent run per branch.
 pub fn get_all_ci_statuses() -> std::collections::HashMap<String, String> {
+    get_all_ci_statuses_in_repo(None)
+}
+
+pub fn get_all_ci_statuses_in_repo(repo: Option<&str>) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
+    let route = match repo {
+        Some(r) => format!("repos/{r}/actions/runs?per_page=50"),
+        None => "repos/{owner}/{repo}/actions/runs?per_page=50".to_string(),
+    };
     let output = run_gh(&[
         "api",
-        "repos/{owner}/{repo}/actions/runs?per_page=50",
+        &route,
         "--jq",
         r#".workflow_runs[] | "\(.head_branch)\t\(.status)\t\(.conclusion)""#,
     ]);
@@ -390,7 +405,11 @@ pub fn get_all_ci_statuses() -> std::collections::HashMap<String, String> {
 }
 
 pub fn get_ci_status(branch: &str) -> String {
-    let output = run_gh(&[
+    get_ci_status_in_repo(branch, None)
+}
+
+pub fn get_ci_status_in_repo(branch: &str, repo: Option<&str>) -> String {
+    let mut args = vec![
         "run",
         "list",
         "--branch",
@@ -401,7 +420,14 @@ pub fn get_ci_status(branch: &str) -> String {
         "status,conclusion",
         "--jq",
         ".[0]",
-    ]);
+    ];
+    let repo_arg: String;
+    if let Some(r) = repo {
+        repo_arg = r.to_string();
+        args.push("--repo");
+        args.push(&repo_arg);
+    }
+    let output = run_gh(&args);
     match output {
         Ok(json_str) if !json_str.is_empty() && json_str != "null" => {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json_str) {

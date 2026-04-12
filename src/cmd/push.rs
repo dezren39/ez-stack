@@ -217,15 +217,13 @@ pub fn push_or_update_pr(
     body_explicitly_set: bool,
     repo_override: Option<&str>,
 ) -> Result<String> {
+    // Normalize repo shorthand (e.g. "fork" → "owner/repo" from remote URL).
+    let resolved_override: Option<String> =
+        repo_override.map(|s| github::resolve_repo_shorthand(s));
     // Resolve effective repo: CLI flag > stored per-branch > global config > None
-    let branch_pr_repo = state
-        .get_branch(branch)
-        .ok()
-        .and_then(|m| m.pr_repo.clone());
-    let effective_repo: Option<String> = repo_override
-        .map(|s| s.to_string())
-        .or(branch_pr_repo)
-        .or_else(|| state.repo.clone().filter(|s| !s.is_empty()));
+    let effective_repo: Option<String> = resolved_override
+        .clone()
+        .or_else(|| state.effective_pr_repo(branch));
 
     // Resolve the push remote for cross-fork head prefix.
     let push_remote = state.effective_push_remote(branch);
@@ -328,8 +326,8 @@ pub fn push_or_update_pr(
             )?;
             state.get_branch_mut(branch)?.pr_number = Some(pr.number);
             // Only persist pr_repo when --repo was explicitly passed on the CLI.
-            if let Some(r) = repo_override {
-                state.get_branch_mut(branch)?.pr_repo = Some(r.to_string());
+            if let Some(ref r) = resolved_override {
+                state.get_branch_mut(branch)?.pr_repo = Some(r.clone());
             }
             ui::info(&format!("Created PR #{}: {}", pr.number, pr.url));
             pr.url
@@ -488,11 +486,9 @@ mod tests {
         state.get_branch_mut("feat/a").unwrap().pr_repo = Some("stored/repo".to_string());
 
         let repo_override: Option<&str> = Some("cli/override");
-        let branch_pr_repo = state.get_branch("feat/a").ok().and_then(|m| m.pr_repo.clone());
         let effective = repo_override
             .map(|s| s.to_string())
-            .or(branch_pr_repo)
-            .or_else(|| state.repo.clone().filter(|s| !s.is_empty()));
+            .or_else(|| state.effective_pr_repo("feat/a"));
         assert_eq!(effective.as_deref(), Some("cli/override"));
     }
 
@@ -505,11 +501,9 @@ mod tests {
         state.get_branch_mut("feat/a").unwrap().pr_repo = Some("stored/repo".to_string());
 
         let repo_override: Option<&str> = None;
-        let branch_pr_repo = state.get_branch("feat/a").ok().and_then(|m| m.pr_repo.clone());
         let effective = repo_override
             .map(|s| s.to_string())
-            .or(branch_pr_repo)
-            .or_else(|| state.repo.clone().filter(|s| !s.is_empty()));
+            .or_else(|| state.effective_pr_repo("feat/a"));
         assert_eq!(effective.as_deref(), Some("stored/repo"));
     }
 
@@ -521,11 +515,9 @@ mod tests {
         state.add_branch("feat/a", "main", "aaa", None, None);
 
         let repo_override: Option<&str> = None;
-        let branch_pr_repo = state.get_branch("feat/a").ok().and_then(|m| m.pr_repo.clone());
         let effective = repo_override
             .map(|s| s.to_string())
-            .or(branch_pr_repo)
-            .or_else(|| state.repo.clone().filter(|s| !s.is_empty()));
+            .or_else(|| state.effective_pr_repo("feat/a"));
         assert_eq!(effective.as_deref(), Some("config/repo"));
     }
 
@@ -536,11 +528,9 @@ mod tests {
         state.add_branch("feat/a", "main", "aaa", None, None);
 
         let repo_override: Option<&str> = None;
-        let branch_pr_repo = state.get_branch("feat/a").ok().and_then(|m| m.pr_repo.clone());
         let effective = repo_override
             .map(|s| s.to_string())
-            .or(branch_pr_repo)
-            .or_else(|| state.repo.clone().filter(|s| !s.is_empty()));
+            .or_else(|| state.effective_pr_repo("feat/a"));
         assert!(effective.is_none());
     }
 
@@ -553,11 +543,9 @@ mod tests {
         state.get_branch_mut("feat/a").unwrap().pr_repo = Some("stored/repo".to_string());
 
         let repo_override: Option<&str> = None;
-        let branch_pr_repo = state.get_branch("feat/a").ok().and_then(|m| m.pr_repo.clone());
         let effective = repo_override
             .map(|s| s.to_string())
-            .or(branch_pr_repo)
-            .or_else(|| state.repo.clone().filter(|s| !s.is_empty()));
+            .or_else(|| state.effective_pr_repo("feat/a"));
         assert_eq!(effective.as_deref(), Some("stored/repo"));
     }
 
