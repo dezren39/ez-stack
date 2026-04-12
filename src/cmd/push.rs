@@ -114,7 +114,7 @@ pub fn run(
         bail!(EzError::BranchNotInStack(current.clone()));
     }
 
-    let remote = &state.remote.clone();
+    let remote = state.effective_push_remote(&current);
 
     // Resolve --no-pr: flag > config > false
     let skip_pr = no_pr || state.no_pr.unwrap_or(false);
@@ -141,8 +141,8 @@ pub fn run(
 
     // Push the branch with force-with-lease.
     let sp = ui::spinner(&format!("Pushing `{current}`..."));
-    git::fetch_branch(remote, &current)?;
-    git::push(remote, &current, true)?;
+    git::fetch_branch(&remote, &current)?;
+    git::push(&remote, &current, true)?;
     sp.finish_and_clear();
     ui::info(&format!("Pushed `{current}`"));
 
@@ -227,11 +227,14 @@ pub fn push_or_update_pr(
         .or(branch_pr_repo)
         .or_else(|| state.repo.clone().filter(|s| !s.is_empty()));
 
+    // Resolve the push remote for cross-fork head prefix.
+    let push_remote = state.effective_push_remote(branch);
+
     // Collect upstream ancestor PRs for the stack section.
     // path_to_trunk returns [branch, ..., trunk]; we want ancestors only.
     let ancestors = stack_ancestors(state, branch, &github::repo_name().unwrap_or_default());
 
-    let existing_pr = github::get_pr_status(branch)?;
+    let existing_pr = github::get_pr_status_in_repo(branch, effective_repo.as_deref())?;
 
     let pr_url = match existing_pr {
         Some(pr) => {
@@ -243,7 +246,11 @@ pub fn push_or_update_pr(
             // clobber a manual `gh pr edit --base` change.
             if pr.base != parent {
                 if git::is_ancestor(parent, branch) {
-                    if let Err(e) = github::update_pr_base(pr.number, parent) {
+                    if let Err(e) = github::update_pr_base_in_repo(
+                        pr.number,
+                        parent,
+                        effective_repo.as_deref(),
+                    ) {
                         ui::warn(&format!(
                             "Push succeeded but PR #{} base could not be updated to `{parent}`: {e}",
                             pr.number
@@ -264,7 +271,12 @@ pub fn push_or_update_pr(
             if body_explicitly_set {
                 let raw_body = body_override.unwrap_or("Part of a stack managed by `ez`.");
                 let body = crate::stack_body::build_stack_body(&ancestors, raw_body);
-                if let Err(e) = github::edit_pr(pr.number, title_override, Some(&body)) {
+                if let Err(e) = github::edit_pr_in_repo(
+                    pr.number,
+                    title_override,
+                    Some(&body),
+                    effective_repo.as_deref(),
+                ) {
                     ui::warn(&format!(
                         "Push succeeded but PR #{} could not be updated: {e}",
                         pr.number
@@ -273,7 +285,9 @@ pub fn push_or_update_pr(
                     ui::info(&format!("Updated PR #{}", pr.number));
                 }
             } else if title_override.is_some() {
-                if let Err(e) = github::edit_pr(pr.number, title_override, None) {
+                if let Err(e) =
+                    github::edit_pr_in_repo(pr.number, title_override, None, effective_repo.as_deref())
+                {
                     ui::warn(&format!(
                         "Push succeeded but PR #{} title could not be updated: {e}",
                         pr.number
@@ -301,11 +315,14 @@ pub fn push_or_update_pr(
             // Always append stack section to new PRs.
             let body = crate::stack_body::build_stack_body(&ancestors, raw_body);
 
+            // Compute cross-fork --head value.
+            let head = github::cross_fork_head(branch, &push_remote, effective_repo.as_deref());
+
             let pr = github::create_pr_in_repo(
                 title,
                 &body,
                 parent,
-                branch,
+                &head,
                 draft,
                 effective_repo.as_deref(),
             )?;

@@ -26,6 +26,9 @@ pub struct BranchMeta {
     /// Stored on first push so future pushes reuse the same target.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr_repo: Option<String>,
+    /// Git remote name to push this branch to (overrides state.remote).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub push_remote: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,6 +63,38 @@ impl StackState {
             no_pr: None,
             rerere: None,
             branches: HashMap::new(),
+        }
+    }
+
+    /// Resolve the effective push remote for a branch.
+    /// Priority: branch.push_remote > git tracking remote > state.remote > git default_remote()
+    pub fn effective_push_remote(&self, branch: &str) -> String {
+        // 1. Per-branch override in stack.json
+        if let Some(meta) = self.branches.get(branch) {
+            if let Some(ref r) = meta.push_remote {
+                if !r.is_empty() {
+                    return r.clone();
+                }
+            }
+        }
+        // 2. Git tracking remote for this branch
+        if let Some(r) = git::tracking_remote(branch) {
+            return r;
+        }
+        // 3. Global state.remote (if non-empty and the remote actually exists)
+        if !self.remote.is_empty() && git::remote_exists(&self.remote) {
+            return self.remote.clone();
+        }
+        // 4. Git default remote
+        git::default_remote()
+    }
+
+    /// Resolve the effective global remote (state.remote with fallback to git default).
+    pub fn effective_remote(&self) -> String {
+        if !self.remote.is_empty() && git::remote_exists(&self.remote) {
+            self.remote.clone()
+        } else {
+            git::default_remote()
         }
     }
 
@@ -109,6 +144,7 @@ impl StackState {
                 parent_head: parent_head.to_string(),
                 pr_number: None,
                 pr_repo: None,
+                push_remote: None,
                 scope,
                 scope_mode,
             },

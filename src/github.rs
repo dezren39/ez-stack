@@ -78,18 +78,41 @@ pub fn create_pr_in_repo(
 }
 
 pub fn update_pr_base(pr_number: u64, new_base: &str) -> Result<()> {
-    run_gh(&["pr", "edit", &pr_number.to_string(), "--base", new_base])?;
+    update_pr_base_in_repo(pr_number, new_base, None)
+}
+
+pub fn update_pr_base_in_repo(pr_number: u64, new_base: &str, repo: Option<&str>) -> Result<()> {
+    let num = pr_number.to_string();
+    let mut args: Vec<&str> = vec!["pr", "edit", &num, "--base", new_base];
+    let repo_arg: String;
+    if let Some(r) = repo {
+        repo_arg = r.to_string();
+        args.push("--repo");
+        args.push(&repo_arg);
+    }
+    run_gh(&args)?;
     Ok(())
 }
 
 pub fn get_pr_status(branch: &str) -> Result<Option<PrInfo>> {
-    let output = run_gh(&[
+    get_pr_status_in_repo(branch, None)
+}
+
+pub fn get_pr_status_in_repo(branch: &str, repo: Option<&str>) -> Result<Option<PrInfo>> {
+    let mut args = vec![
         "pr",
         "view",
         branch,
         "--json",
         "number,url,state,title,isDraft,mergedAt,baseRefName",
-    ]);
+    ];
+    let repo_arg: String;
+    if let Some(r) = repo {
+        repo_arg = r.to_string();
+        args.push("--repo");
+        args.push(&repo_arg);
+    }
+    let output = run_gh(&args);
 
     match output {
         Ok(json_str) => {
@@ -170,28 +193,16 @@ fn pr_info_from_rest_value(value: &serde_json::Value) -> Option<(String, PrInfo)
     ))
 }
 
-pub fn merge_pr(pr_number: u64, method: &str) -> Result<()> {
-    let repo = repo_name()?;
-    let route = format!("repos/{repo}/pulls/{pr_number}/merge");
-    let response = run_gh(&[
-        "api",
-        "-X",
-        "PUT",
-        &route,
-        "-f",
-        &format!("merge_method={method}"),
-    ])?;
-
-    let value: serde_json::Value = serde_json::from_str(&response)?;
-    if value["merged"].as_bool().unwrap_or(false) {
-        return Ok(());
-    }
-
-    let message = value["message"].as_str().unwrap_or("merge failed");
-    bail!(EzError::GhError(message.to_string()));
+pub fn edit_pr(pr_number: u64, title: Option<&str>, body: Option<&str>) -> Result<()> {
+    edit_pr_in_repo(pr_number, title, body, None)
 }
 
-pub fn edit_pr(pr_number: u64, title: Option<&str>, body: Option<&str>) -> Result<()> {
+pub fn edit_pr_in_repo(
+    pr_number: u64,
+    title: Option<&str>,
+    body: Option<&str>,
+    repo: Option<&str>,
+) -> Result<()> {
     let number_str = pr_number.to_string();
     let mut args: Vec<&str> = vec!["pr", "edit", &number_str];
     if let Some(t) = title {
@@ -202,6 +213,12 @@ pub fn edit_pr(pr_number: u64, title: Option<&str>, body: Option<&str>) -> Resul
     }
     if args.len() == 3 {
         anyhow::bail!("No edits specified — provide --title, --body, or --body-file");
+    }
+    let repo_arg: String;
+    if let Some(r) = repo {
+        repo_arg = r.to_string();
+        args.push("--repo");
+        args.push(&repo_arg);
     }
     run_gh(&args)?;
     Ok(())
@@ -241,21 +258,36 @@ pub fn repo_name() -> Result<String> {
 
 /// Fetch the current body of a PR (raw markdown, no stack section stripped).
 pub fn get_pr_body(pr_number: u64) -> Result<String> {
-    let body = run_gh(&[
-        "pr",
-        "view",
-        &pr_number.to_string(),
-        "--json",
-        "body",
-        "-q",
-        ".body",
-    ])?;
+    get_pr_body_in_repo(pr_number, None)
+}
+
+pub fn get_pr_body_in_repo(pr_number: u64, repo: Option<&str>) -> Result<String> {
+    let num = pr_number.to_string();
+    let mut args: Vec<&str> = vec!["pr", "view", &num, "--json", "body", "-q", ".body"];
+    let repo_arg: String;
+    if let Some(r) = repo {
+        repo_arg = r.to_string();
+        args.push("--repo");
+        args.push(&repo_arg);
+    }
+    let body = run_gh(&args)?;
     Ok(body)
 }
 
 /// Open the PR for a branch in the default browser.
 pub fn open_pr_in_browser(branch: &str) -> Result<()> {
-    run_gh(&["pr", "view", "--web", branch])?;
+    open_pr_in_browser_in_repo(branch, None)
+}
+
+pub fn open_pr_in_browser_in_repo(branch: &str, repo: Option<&str>) -> Result<()> {
+    let mut args: Vec<&str> = vec!["pr", "view", "--web", branch];
+    let repo_arg: String;
+    if let Some(r) = repo {
+        repo_arg = r.to_string();
+        args.push("--repo");
+        args.push(&repo_arg);
+    }
+    run_gh(&args)?;
     Ok(())
 }
 
@@ -334,13 +366,69 @@ pub fn get_ci_status(branch: &str) -> String {
 /// Set or unset draft status on a PR.
 /// `ready = true` → mark ready for review; `ready = false` → mark as draft.
 pub fn set_pr_ready(pr_number: u64, ready: bool) -> Result<()> {
+    set_pr_ready_in_repo(pr_number, ready, None)
+}
+
+pub fn set_pr_ready_in_repo(pr_number: u64, ready: bool, repo: Option<&str>) -> Result<()> {
     let number = pr_number.to_string();
-    if ready {
-        run_gh(&["pr", "ready", &number])?;
+    let mut args: Vec<&str> = if ready {
+        vec!["pr", "ready", &number]
     } else {
-        run_gh(&["pr", "ready", "--undo", &number])?;
+        vec!["pr", "ready", "--undo", &number]
+    };
+    let repo_arg: String;
+    if let Some(r) = repo {
+        repo_arg = r.to_string();
+        args.push("--repo");
+        args.push(&repo_arg);
     }
+    run_gh(&args)?;
     Ok(())
+}
+
+/// Compute the cross-fork `--head` value for `gh pr create`.
+/// If the push remote owner differs from the PR target repo owner,
+/// returns `push_owner:branch`. Otherwise returns just `branch`.
+pub fn cross_fork_head(branch: &str, push_remote: &str, pr_repo: Option<&str>) -> String {
+    let Some(target_repo) = pr_repo else {
+        return branch.to_string();
+    };
+    let target_owner = target_repo.split('/').next().unwrap_or("");
+    let push_owner = crate::git::remote_owner(push_remote).unwrap_or_default();
+    if push_owner.is_empty() || push_owner == target_owner {
+        branch.to_string()
+    } else {
+        format!("{push_owner}:{branch}")
+    }
+}
+
+/// Merge a PR via the GitHub REST API.
+pub fn merge_pr(pr_number: u64, method: &str) -> Result<()> {
+    merge_pr_in_repo(pr_number, method, None)
+}
+
+pub fn merge_pr_in_repo(pr_number: u64, method: &str, repo: Option<&str>) -> Result<()> {
+    let effective_repo = match repo {
+        Some(r) => r.to_string(),
+        None => repo_name()?,
+    };
+    let route = format!("repos/{effective_repo}/pulls/{pr_number}/merge");
+    let response = run_gh(&[
+        "api",
+        "-X",
+        "PUT",
+        &route,
+        "-f",
+        &format!("merge_method={method}"),
+    ])?;
+
+    let value: serde_json::Value = serde_json::from_str(&response)?;
+    if value["merged"].as_bool().unwrap_or(false) {
+        return Ok(());
+    }
+
+    let message = value["message"].as_str().unwrap_or("merge failed");
+    bail!(EzError::GhError(message.to_string()));
 }
 
 #[cfg(test)]
@@ -657,6 +745,35 @@ exit 0
         assert_eq!(
             repo_name_from_url("https://gitlab.com/user/repo.git"),
             None
+        );
+    }
+
+    #[test]
+    fn cross_fork_head_no_repo_returns_bare_branch() {
+        assert_eq!(cross_fork_head("feat/x", "origin", None), "feat/x");
+    }
+
+    #[test]
+    fn cross_fork_head_same_owner_returns_bare_branch() {
+        let _guard = take_env_lock();
+        let repo = crate::test_support::init_git_repo("cross-fork-same");
+        let _cwd = crate::test_support::CwdGuard::enter(&repo);
+        crate::git::add_remote("origin", "https://github.com/upstream/repo.git").ok();
+        assert_eq!(
+            cross_fork_head("feat/x", "origin", Some("upstream/repo")),
+            "feat/x"
+        );
+    }
+
+    #[test]
+    fn cross_fork_head_different_owner_prefixes_branch() {
+        let _guard = take_env_lock();
+        let repo = crate::test_support::init_git_repo("cross-fork-diff");
+        let _cwd = crate::test_support::CwdGuard::enter(&repo);
+        crate::git::add_remote("myfork", "https://github.com/myuser/repo.git").ok();
+        assert_eq!(
+            cross_fork_head("feat/x", "myfork", Some("upstream/repo")),
+            "myuser:feat/x"
         );
     }
 }

@@ -492,6 +492,48 @@ pub fn is_ancestor(ancestor: &str, descendant: &str) -> bool {
     success
 }
 
+/// Get the remote that a branch is tracking (e.g., `git config branch.<name>.remote`).
+/// Returns `None` if the branch has no tracking remote.
+pub fn tracking_remote(branch: &str) -> Option<String> {
+    run_git(&["config", &format!("branch.{branch}.remote")])
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Determine the default git remote.
+/// Prefers the only remote if there is exactly one. Falls back to "origin" if it exists.
+/// Returns "origin" as last resort (may not exist).
+pub fn default_remote() -> String {
+    if let Ok(out) = run_git(&["remote"]) {
+        let remotes: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+        if remotes.len() == 1 {
+            return remotes[0].to_string();
+        }
+        if remotes.contains(&"origin") {
+            return "origin".to_string();
+        }
+        if let Some(first) = remotes.first() {
+            return first.to_string();
+        }
+    }
+    "origin".to_string()
+}
+
+/// Extract "owner" from a remote URL.
+/// Handles https://github.com/owner/repo.git and git@github.com:owner/repo.git
+pub fn remote_owner(remote: &str) -> Option<String> {
+    let url = remote_url(remote).ok()?;
+    let cleaned = url.trim_end_matches(".git").trim_end_matches('/');
+    let path = if let Some(rest) = cleaned.strip_prefix("https://github.com/") {
+        rest
+    } else if let Some(rest) = cleaned.strip_prefix("git@github.com:") {
+        rest
+    } else {
+        return None;
+    };
+    path.split('/').next().map(|s| s.to_string())
+}
+
 pub fn default_branch() -> Result<String> {
     // Try to detect from remote
     if let Ok(out) = run_git(&["symbolic-ref", "refs/remotes/origin/HEAD"])
@@ -1219,5 +1261,80 @@ exit 0
         let _cwd = CwdGuard::enter(&repo);
 
         assert!(!remote_exists("nope"));
+    }
+
+    #[test]
+    fn default_remote_returns_only_remote_when_single() {
+        let _guard = take_env_lock();
+        let repo = init_git_repo("git-default-remote-single");
+        let _cwd = CwdGuard::enter(&repo);
+
+        add_remote("myfork", "https://github.com/user/repo.git").expect("add remote");
+        assert_eq!(default_remote(), "myfork");
+    }
+
+    #[test]
+    fn default_remote_prefers_origin_when_multiple() {
+        let _guard = take_env_lock();
+        let repo = init_git_repo("git-default-remote-origin");
+        let _cwd = CwdGuard::enter(&repo);
+
+        add_remote("upstream", "https://github.com/org/repo.git").expect("add upstream");
+        add_remote("origin", "https://github.com/user/repo.git").expect("add origin");
+        assert_eq!(default_remote(), "origin");
+    }
+
+    #[test]
+    fn default_remote_returns_first_when_no_origin() {
+        let _guard = take_env_lock();
+        let repo = init_git_repo("git-default-remote-noo");
+        let _cwd = CwdGuard::enter(&repo);
+
+        add_remote("alpha", "https://github.com/a/repo.git").expect("add alpha");
+        add_remote("beta", "https://github.com/b/repo.git").expect("add beta");
+        // No origin, should return the first (alphabetically from git remote output).
+        let result = default_remote();
+        assert!(
+            result == "alpha" || result == "beta",
+            "should return one of the remotes, got: {result}"
+        );
+    }
+
+    #[test]
+    fn tracking_remote_returns_none_when_unset() {
+        let _guard = take_env_lock();
+        let repo = init_git_repo("git-tracking-none");
+        let _cwd = CwdGuard::enter(&repo);
+
+        assert_eq!(tracking_remote("main"), None);
+    }
+
+    #[test]
+    fn remote_owner_parses_https_url() {
+        let _guard = take_env_lock();
+        let repo = init_git_repo("git-remote-owner-https");
+        let _cwd = CwdGuard::enter(&repo);
+
+        add_remote("origin", "https://github.com/myuser/myrepo.git").expect("add remote");
+        assert_eq!(remote_owner("origin"), Some("myuser".to_string()));
+    }
+
+    #[test]
+    fn remote_owner_parses_ssh_url() {
+        let _guard = take_env_lock();
+        let repo = init_git_repo("git-remote-owner-ssh");
+        let _cwd = CwdGuard::enter(&repo);
+
+        add_remote("origin", "git@github.com:someone/their-repo.git").expect("add remote");
+        assert_eq!(remote_owner("origin"), Some("someone".to_string()));
+    }
+
+    #[test]
+    fn remote_owner_returns_none_for_missing_remote() {
+        let _guard = take_env_lock();
+        let repo = init_git_repo("git-remote-owner-missing");
+        let _cwd = CwdGuard::enter(&repo);
+
+        assert_eq!(remote_owner("nope"), None);
     }
 }

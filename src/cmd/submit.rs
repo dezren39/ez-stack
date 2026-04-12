@@ -63,12 +63,14 @@ pub fn run(
         return Ok(());
     }
 
-    let remote = state.remote.clone();
     let body_explicitly_set = body.is_some() || body_file.is_some();
     let mut pr_urls: Vec<(String, String)> = Vec::new();
 
     for branch in &branches_to_submit {
         let parent = state.get_branch(branch)?.parent.clone();
+
+        // Resolve push remote per-branch.
+        let remote = state.effective_push_remote(branch);
 
         // Push with force-with-lease.
         let sp = ui::spinner(&format!("Pushing `{branch}`..."));

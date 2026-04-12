@@ -210,6 +210,7 @@ mod tests {
                 parent_head: "abc".to_string(),
                 pr_number: Some(99),
                 pr_repo: None,
+                push_remote: None,
                 scope: None,
                 scope_mode: None,
             },
