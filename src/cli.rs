@@ -242,7 +242,15 @@ Examples:
     },
 
     /// Fetch trunk, refresh it locally, and rebase stale branches onto their latest parent tips
-    Restack,
+    #[command(after_help = "\
+Examples:
+  ez restack
+  ez restack --force")]
+    Restack {
+        /// Force restack even if merge commits are detected in feature branches
+        #[arg(long)]
+        force: bool,
+    },
 
     /// Move up one branch in the stack
     Up,

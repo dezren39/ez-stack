@@ -188,7 +188,7 @@ fn run(cli: Cli) -> Result<()> {
             autostash,
             force,
         } => cmd::sync::run(dry_run, autostash, force),
-        Commands::Restack => cmd::restack::run(),
+        Commands::Restack { force } => cmd::restack::run(force),
         Commands::Up => cmd::navigate::up(),
         Commands::Down => cmd::navigate::down(),
         Commands::Top => cmd::navigate::top(),

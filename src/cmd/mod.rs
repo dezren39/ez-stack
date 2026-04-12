@@ -15,6 +15,7 @@ pub mod move_branch;
 pub mod mutation_guard;
 pub mod navigate;
 pub mod parent;
+pub mod preflight;
 pub mod pr_edit;
 pub mod pr_link;
 pub mod pr_view;
