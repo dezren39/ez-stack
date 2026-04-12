@@ -1357,4 +1357,58 @@ exit 0
 
         assert_eq!(remote_owner("nope"), None);
     }
+
+    #[test]
+    fn merge_squash_squashes_branch_into_current() {
+        let _guard = take_env_lock();
+        let repo = init_git_repo("git-merge-squash");
+        let _cwd = CwdGuard::enter(&repo);
+
+        // Create and commit on a feature branch.
+        create_branch("feat/squash-test").expect("create branch");
+        write_file(&repo, "feat.txt", "feature\n");
+        add_paths(&["feat.txt".to_string()]).expect("stage");
+        commit("feat commit").expect("commit");
+
+        // Switch back to main and squash.
+        checkout("main").expect("checkout main");
+        merge_squash("feat/squash-test").expect("merge squash");
+
+        // Squash stages but doesn't commit — there should be staged changes.
+        assert!(has_staged_changes().expect("check staged"), "squash should stage changes");
+    }
+
+    #[test]
+    fn rename_branch_renames_ref() {
+        let _guard = take_env_lock();
+        let repo = init_git_repo("git-rename-branch");
+        let _cwd = CwdGuard::enter(&repo);
+
+        create_branch_at("old-name", "main").expect("create");
+        assert!(branch_exists("old-name"));
+
+        rename_branch("old-name", "new-name").expect("rename");
+        assert!(!branch_exists("old-name"));
+        assert!(branch_exists("new-name"));
+    }
+
+    #[test]
+    fn update_branch_ref_moves_branch_pointer() {
+        let _guard = take_env_lock();
+        let repo = init_git_repo("git-update-ref");
+        let _cwd = CwdGuard::enter(&repo);
+
+        let main_head = rev_parse("main").expect("main head");
+
+        // Create a branch, advance main, then force-update branch to new main.
+        create_branch_at("feat/ref-test", "main").expect("create");
+        write_file(&repo, "advance.txt", "new\n");
+        add_paths(&["advance.txt".to_string()]).expect("stage");
+        commit("advance main").expect("commit");
+        let new_head = rev_parse("main").expect("new main head");
+
+        assert_eq!(rev_parse("feat/ref-test").expect("before"), main_head);
+        update_branch_ref("feat/ref-test", &new_head).expect("update ref");
+        assert_eq!(rev_parse("feat/ref-test").expect("after"), new_head);
+    }
 }

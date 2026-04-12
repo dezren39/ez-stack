@@ -929,6 +929,73 @@ mod tests {
     }
 
     #[test]
+    fn parses_merge_local_with_strategy() {
+        let cli = Cli::try_parse_from(["ez", "merge", "--local", "--strategy", "rebase"])
+            .expect("parse merge --local");
+
+        match cli.command {
+            Commands::Merge { local, strategy, into, force, stack, .. } => {
+                assert!(local);
+                assert_eq!(strategy, "rebase");
+                assert!(into.is_none());
+                assert!(!force);
+                assert!(!stack);
+            }
+            _ => panic!("expected merge command"),
+        }
+    }
+
+    #[test]
+    fn parses_merge_local_into_with_force() {
+        let cli = Cli::try_parse_from(["ez", "merge", "--local", "--into", "main", "--force"])
+            .expect("parse merge --local --into");
+
+        match cli.command {
+            Commands::Merge { local, into, force, strategy, .. } => {
+                assert!(local);
+                assert_eq!(into, Some("main".to_string()));
+                assert!(force);
+                assert_eq!(strategy, "squash"); // default
+            }
+            _ => panic!("expected merge command"),
+        }
+    }
+
+    #[test]
+    fn merge_stack_conflicts_with_local() {
+        let result = Cli::try_parse_from(["ez", "merge", "--stack", "--local"]);
+        assert!(result.is_err(), "--stack and --local should conflict");
+    }
+
+    #[test]
+    fn parses_fold_command() {
+        let cli = Cli::try_parse_from(["ez", "fold", "feat/a..feat/c"])
+            .expect("parse fold");
+
+        match cli.command {
+            Commands::Fold { range, name } => {
+                assert_eq!(range, "feat/a..feat/c");
+                assert!(name.is_none());
+            }
+            _ => panic!("expected fold command"),
+        }
+    }
+
+    #[test]
+    fn parses_fold_with_name() {
+        let cli = Cli::try_parse_from(["ez", "fold", "feat/a..feat/c", "--name", "feat/combined"])
+            .expect("parse fold --name");
+
+        match cli.command {
+            Commands::Fold { range, name } => {
+                assert_eq!(range, "feat/a..feat/c");
+                assert_eq!(name, Some("feat/combined".to_string()));
+            }
+            _ => panic!("expected fold command"),
+        }
+    }
+
+    #[test]
     fn parses_push_repo_flag() {
         let cli = Cli::try_parse_from(["ez", "push", "--repo", "owner/repo"])
             .expect("parse push --repo");
