@@ -169,7 +169,7 @@ fn parse_pr_value(value: &str) -> ParsedPr {
     // owner/repo#123
     if let Some((repo_part, num_part)) = value.split_once('#') {
         return ParsedPr {
-            repo: Some(normalize_repo(repo_part)),
+            repo: Some(github::resolve_repo_shorthand(repo_part)),
             number: num_part.parse::<u64>().ok(),
         };
     }
@@ -191,35 +191,19 @@ fn parse_pr_value(value: &str) -> ParsedPr {
 
 /// Parse `pr_repo` value. Unlike the smart `pr` parser, this always sets repo.
 ///   - `123` → literal "123" (repo name is actually a number)
-///   - `myrepo` → prepend current owner → `currentowner/myrepo`
+///   - `myrepo` → resolve via shorthand (check remotes, then prepend owner)
 ///   - `owner/repo` → as-is
 fn parse_pr_repo_value(value: &str) -> String {
     let value = value.trim();
     if value.contains('/') {
         return value.to_string();
     }
-    // Pure number → literal repo name (don't prepend owner)
+    // Pure number → literal repo name (don't resolve)
     if value.parse::<u64>().is_ok() {
         return value.to_string();
     }
-    // No owner/ — prepend current repo owner
-    normalize_repo(value)
-}
-
-/// Ensure a repo value has an owner/ prefix.
-/// If missing, prepend the owner from `gh repo view`.
-fn normalize_repo(value: &str) -> String {
-    if value.contains('/') {
-        return value.to_string();
-    }
-    // Try to get current repo owner
-    if let Ok(current) = github::repo_name() {
-        if let Some(owner) = current.split('/').next() {
-            return format!("{owner}/{value}");
-        }
-    }
-    // Can't determine owner — return as-is
-    value.to_string()
+    // Resolve via shorthand chain
+    github::resolve_repo_shorthand(value)
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────

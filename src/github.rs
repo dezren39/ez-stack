@@ -256,6 +256,64 @@ pub fn repo_name() -> Result<String> {
     Ok(output)
 }
 
+/// Resolve a shorthand repo-like string into a full `owner/repo`.
+///
+/// Resolution chain for a bare name like `asd`:
+///   1. Already `owner/repo` → return as-is
+///   2. Git remote named `asd` exists → extract owner/repo from its URL
+///   3. A remote whose URL owner matches `asd` → return that remote's repo
+///   4. Current user's repo: `current_owner/asd`
+///   5. Upstream/origin owner's repo: `upstream_owner/asd`
+///   6. Return as-is (can't resolve)
+///
+/// This should NOT be used when the input might be a branch name
+/// (where `foo/bar` could mean `remote/branch`).
+pub fn resolve_repo_shorthand(value: &str) -> String {
+    let value = value.trim();
+    // Already fully qualified
+    if value.contains('/') {
+        return value.to_string();
+    }
+    // Pure number → literal (repo named "123")
+    if value.parse::<u64>().is_ok() {
+        return value.to_string();
+    }
+    // 1. Is there a git remote with this exact name?
+    if crate::git::remote_exists(value) {
+        if let Ok(url) = crate::git::remote_url(value) {
+            if let Some(repo) = repo_name_from_url(&url) {
+                return repo;
+            }
+        }
+    }
+    // 2. Is there a remote whose URL owner matches this name?
+    if let Ok(remotes_output) = std::process::Command::new("git")
+        .args(["remote"])
+        .output()
+    {
+        let remotes = String::from_utf8_lossy(&remotes_output.stdout);
+        for remote_name in remotes.lines().filter(|l| !l.is_empty()) {
+            if let Some(owner) = crate::git::remote_owner(remote_name) {
+                if owner == value {
+                    if let Ok(url) = crate::git::remote_url(remote_name) {
+                        if let Some(repo) = repo_name_from_url(&url) {
+                            return repo;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // 3. Prepend current repo owner
+    if let Ok(current) = repo_name() {
+        if let Some(owner) = current.split('/').next() {
+            return format!("{owner}/{value}");
+        }
+    }
+    // 4. Can't resolve
+    value.to_string()
+}
+
 /// Fetch the current body of a PR (raw markdown, no stack section stripped).
 pub fn get_pr_body(pr_number: u64) -> Result<String> {
     get_pr_body_in_repo(pr_number, None)
@@ -774,6 +832,40 @@ exit 0
         assert_eq!(
             cross_fork_head("feat/x", "myfork", Some("upstream/repo")),
             "myuser:feat/x"
+        );
+    }
+
+    #[test]
+    fn resolve_repo_shorthand_already_qualified() {
+        assert_eq!(resolve_repo_shorthand("owner/repo"), "owner/repo");
+    }
+
+    #[test]
+    fn resolve_repo_shorthand_pure_number_is_literal() {
+        assert_eq!(resolve_repo_shorthand("123"), "123");
+    }
+
+    #[test]
+    fn resolve_repo_shorthand_remote_name_resolves() {
+        let _guard = take_env_lock();
+        let repo = crate::test_support::init_git_repo("resolve-remote-name");
+        let _cwd = crate::test_support::CwdGuard::enter(&repo);
+        crate::git::add_remote("myfork", "https://github.com/dezren39/ez-stack.git").ok();
+        assert_eq!(
+            resolve_repo_shorthand("myfork"),
+            "dezren39/ez-stack"
+        );
+    }
+
+    #[test]
+    fn resolve_repo_shorthand_remote_owner_resolves() {
+        let _guard = take_env_lock();
+        let repo = crate::test_support::init_git_repo("resolve-remote-owner");
+        let _cwd = crate::test_support::CwdGuard::enter(&repo);
+        crate::git::add_remote("fork", "https://github.com/dezren39/ez-stack.git").ok();
+        assert_eq!(
+            resolve_repo_shorthand("dezren39"),
+            "dezren39/ez-stack"
         );
     }
 }
