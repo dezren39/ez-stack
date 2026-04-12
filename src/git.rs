@@ -214,6 +214,28 @@ pub fn cherry(upstream: &str, branch: &str) -> Result<String> {
     run_git(&["cherry", upstream, branch])
 }
 
+/// Count merge commits in the range `parent..branch`.
+/// Returns 0 if there are none or if the command fails.
+pub fn merge_commit_count(parent: &str, branch: &str) -> u64 {
+    let range = format!("{parent}..{branch}");
+    run_git(&["rev-list", "--merges", "--count", &range])
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+/// Check if all commits in `parent..branch` are redundant (already upstream).
+/// Returns true if every commit is marked with `- ` by `git cherry`.
+pub fn all_commits_redundant(parent: &str, branch: &str) -> bool {
+    match cherry(parent, branch) {
+        Ok(output) => {
+            let lines: Vec<&str> = output.lines().filter(|l| !l.is_empty()).collect();
+            !lines.is_empty() && lines.iter().all(|l| l.starts_with("- "))
+        }
+        Err(_) => false,
+    }
+}
+
 /// Stage all tracked modified/deleted files. Uses `git add -u` (NOT `git add -A`)
 /// so untracked files are never accidentally staged by the -a flag.
 pub fn add_all() -> Result<()> {

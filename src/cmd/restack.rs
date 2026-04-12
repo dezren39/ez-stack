@@ -1,12 +1,13 @@
 use anyhow::{Result, bail};
 
+use crate::cmd::preflight;
 use crate::cmd::rebase_conflict;
 use crate::error::EzError;
 use crate::git;
 use crate::stack::StackState;
 use crate::ui;
 
-pub fn run() -> Result<()> {
+pub fn run(force: bool) -> Result<()> {
     let mut state = StackState::load()?;
     if let Some(root) = git::current_linked_worktree_root()? {
         ui::linked_worktree_warning(&root);
@@ -26,6 +27,21 @@ pub fn run() -> Result<()> {
         Ok(false) => {}
         Err(e) => ui::warn(&format!("Could not update `{}` — {e}", state.trunk)),
     }
+
+    // Pre-flight checks: detect merge commits and redundant branches.
+    let checks = preflight::check_all(&state);
+    if preflight::report_and_check(&checks, force) {
+        bail!(EzError::UserMessage(
+            "restack aborted — resolve the issues above or use `ez restack --force`".to_string()
+        ));
+    }
+
+    // Build a set of fully-redundant branches so we can skip their rebase.
+    let redundant_branches: std::collections::HashSet<String> = checks
+        .iter()
+        .filter(|c| c.all_redundant)
+        .map(|c| c.branch.clone())
+        .collect();
 
     let order = state.topo_order();
     let mut restacked = 0;
@@ -49,11 +65,47 @@ pub fn run() -> Result<()> {
             continue;
         }
 
+        // If all commits are redundant, skip rebase and just update metadata.
+        if redundant_branches.contains(branch_name) {
+            let meta = state.get_branch_mut(branch_name)?;
+            meta.parent_head = current_parent_tip;
+            ui::info(&format!(
+                "Skipped rebase for `{branch_name}` — all commits already in `{parent}` (metadata updated)"
+            ));
+            ui::receipt(&serde_json::json!({
+                "cmd": "restack",
+                "branch": branch_name,
+                "action": "redundant_skip",
+                "parent": parent,
+            }));
+            restacked += 1;
+            continue;
+        }
+
         // Branch is stale — rebase onto the new parent tip.
         let before_sha = git::rev_parse(branch_name).unwrap_or_default();
 
+        // If merge commits were detected but --force was used, use plain rebase
+        // (better patch-id skipping) instead of rebase --onto.
+        let has_merges = checks.iter().any(|c| c.branch == *branch_name && c.merge_commits > 0);
+
         let sp = ui::spinner(&format!("Restacking `{branch_name}` onto `{parent}`..."));
-        let outcome = git::rebase_onto(&current_parent_tip, &stored_parent_head, branch_name)?;
+        let outcome = if has_merges {
+            ui::info(&format!(
+                "Branch `{branch_name}` has merge commits — using safe rebase mode"
+            ));
+            // Plain rebase has better patch-id skipping for merge commits.
+            match git::rebase(&parent, branch_name) {
+                Ok(true) => git::RebaseOutcome::RebasingComplete,
+                Ok(false) => git::RebaseOutcome::Conflict(git::RebaseConflict {
+                    conflicting_files: vec![],
+                    stderr: "rebase conflict during safe rebase mode".to_string(),
+                }),
+                Err(e) => return Err(e),
+            }
+        } else {
+            git::rebase_onto(&current_parent_tip, &stored_parent_head, branch_name)?
+        };
         sp.finish_and_clear();
 
         match outcome {
@@ -105,6 +157,7 @@ pub fn run() -> Result<()> {
                     "before": &before_sha[..before_sha.len().min(7)],
                     "after": &after_sha[..after_sha.len().min(7)],
                     "redundant_commits": redundant_count,
+                    "safe_rebase_mode": has_merges,
                 }));
             }
             git::RebaseOutcome::Conflict(conflict) => {
