@@ -275,6 +275,10 @@ Examples:
     Switch {
         /// Branch name or PR number to switch to directly
         name: Option<String>,
+
+        /// Exit 0 and print worktree path without requiring shell cd integration
+        #[arg(long)]
+        no_cd_required: bool,
     },
 
     /// Show the visual stack tree with PR status

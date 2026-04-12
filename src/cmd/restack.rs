@@ -52,7 +52,6 @@ pub fn run(force: bool) -> Result<()> {
 
     let order = state.topo_order();
     let mut restacked = 0;
-    let mut skipped = 0;
 
     for branch_name in &order {
         let meta = state.get_branch(branch_name)?;
@@ -65,12 +64,14 @@ pub fn run(force: bool) -> Result<()> {
             continue;
         }
 
-        // Guard: skip branches checked out in another worktree.
-        if let Ok(Some(_wt_path)) = git::branch_checked_out_elsewhere(branch_name, &current_root) {
-            ui::warn(&format!("Skipped `{branch_name}` (in worktree)"));
-            skipped += 1;
-            continue;
-        }
+        // Instead of skipping, detach worktree HEAD so rebase can proceed.
+        let worktree_path = if let Ok(Some(wt_path)) = git::branch_checked_out_elsewhere(branch_name, &current_root) {
+            ui::info(&format!("Detaching `{branch_name}` in worktree `{wt_path}` for rebase..."));
+            git::detach_worktree_head(&wt_path)?;
+            Some(wt_path)
+        } else {
+            None
+        };
 
         // If all commits are redundant, skip rebase and just update metadata.
         if redundant_branches.contains(branch_name) {
@@ -85,6 +86,10 @@ pub fn run(force: bool) -> Result<()> {
                 "action": "redundant_skip",
                 "parent": parent,
             }));
+            // Reattach worktree if we detached it.
+            if let Some(ref wt_path) = worktree_path {
+                let _ = git::reattach_worktree(wt_path, branch_name);
+            }
             restacked += 1;
             continue;
         }
@@ -166,8 +171,22 @@ pub fn run(force: bool) -> Result<()> {
                     "redundant_commits": redundant_count,
                     "safe_rebase_mode": has_merges,
                 }));
+
+                // Reattach worktree if we detached it.
+                if let Some(ref wt_path) = worktree_path {
+                    if !git::reattach_worktree(wt_path, branch_name)? {
+                        ui::warn(&format!(
+                            "Could not reattach `{branch_name}` in worktree `{wt_path}` — \
+                             worktree may have dirty files that conflict with rebased commits.\n  \
+                             Run `cd {wt_path} && git checkout {branch_name}` to reattach manually."
+                        ));
+                    }
+                }
             }
             git::RebaseOutcome::Conflict(conflict) => {
+                if let Some(ref wt_path) = worktree_path {
+                    let _ = git::reattach_worktree(wt_path, branch_name);
+                }
                 git::checkout(&original_branch)?;
                 state.save()?;
                 rebase_conflict::report("restack", branch_name, &parent, &conflict, "ez restack");
@@ -181,7 +200,7 @@ pub fn run(force: bool) -> Result<()> {
 
     state.save()?;
 
-    if restacked == 0 && skipped == 0 {
+    if restacked == 0 {
         ui::info("All branches are up to date — nothing to restack");
     }
 

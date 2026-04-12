@@ -102,15 +102,23 @@ pub fn run(onto: &str, force: bool) -> Result<()> {
     let current_root = git::repo_root()?;
 
     for child_name in &children {
-        if let Ok(Some(_wt_path)) = git::branch_checked_out_elsewhere(child_name, &current_root) {
-            ui::warn(&format!("Skipped `{child_name}` (in worktree)"));
-            continue;
-        }
+        // Instead of skipping, detach worktree HEAD so rebase can proceed.
+        let worktree_path = if let Ok(Some(wt_path)) = git::branch_checked_out_elsewhere(child_name, &current_root) {
+            ui::info(&format!("Detaching `{child_name}` in worktree `{wt_path}` for rebase..."));
+            git::detach_worktree_head(&wt_path)?;
+            Some(wt_path)
+        } else {
+            None
+        };
 
         let child = state.get_branch(child_name)?;
         let child_parent_head = child.parent_head.clone();
 
         if child_parent_head == new_tip {
+            // Reattach if we detached but no rebase needed.
+            if let Some(ref wt_path) = worktree_path {
+                let _ = git::reattach_worktree(wt_path, child_name);
+            }
             continue;
         }
 
@@ -124,8 +132,22 @@ pub fn run(onto: &str, force: bool) -> Result<()> {
                 child.parent_head = new_tip.clone();
                 restacked += 1;
                 ui::info(&format!("Restacked `{child_name}` onto `{current}`"));
+
+                // Reattach worktree if we detached it.
+                if let Some(ref wt_path) = worktree_path {
+                    if !git::reattach_worktree(wt_path, child_name)? {
+                        ui::warn(&format!(
+                            "Could not reattach `{child_name}` in worktree `{wt_path}` — \
+                             worktree may have dirty files that conflict with rebased commits.\n  \
+                             Run `cd {wt_path} && git checkout {child_name}` to reattach manually."
+                        ));
+                    }
+                }
             }
             git::RebaseOutcome::Conflict(conflict) => {
+                if let Some(ref wt_path) = worktree_path {
+                    let _ = git::reattach_worktree(wt_path, child_name);
+                }
                 state.save()?;
                 rebase_conflict::report("move", child_name, &current, &conflict, "ez restack");
                 bail!(EzError::RebaseConflict(child_name.clone()));

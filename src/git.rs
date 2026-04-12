@@ -635,6 +635,21 @@ pub fn branch_checked_out_elsewhere(branch: &str, current_root: &str) -> Result<
     Ok(None)
 }
 
+/// Detach HEAD in a linked worktree so the branch ref is free for rebase.
+/// Runs `git -C <wt_path> checkout --detach HEAD`.
+pub fn detach_worktree_head(wt_path: &str) -> Result<()> {
+    run_git(&["-C", wt_path, "checkout", "--detach", "HEAD"])?;
+    Ok(())
+}
+
+/// Reattach a branch in a linked worktree after rebase.
+/// Runs `git -C <wt_path> checkout <branch>`.
+/// Returns Ok(true) if reattach succeeded, Ok(false) if it failed (e.g. dirty file conflict).
+pub fn reattach_worktree(wt_path: &str, branch: &str) -> Result<bool> {
+    let (success, _stdout, _stderr) = run_git_with_status(&["-C", wt_path, "checkout", branch])?;
+    Ok(success)
+}
+
 /// Update a local branch to the latest fetched remote-tracking ref without requiring checkout.
 ///
 /// Returns `Ok(true)` when the branch moved, `Ok(false)` when it was already up to date.
