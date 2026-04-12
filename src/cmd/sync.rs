@@ -380,6 +380,13 @@ fn run_sync_inner(force: bool) -> Result<()> {
 
     // Pre-flight checks: detect merge commits, redundant branches, stale metadata.
     let checks = preflight::check_all(&state);
+    if !checks.is_empty() {
+        ui::receipt(&serde_json::json!({
+            "cmd": "sync",
+            "action": "preflight",
+            "summary": preflight::summary(&checks),
+        }));
+    }
     if preflight::report_and_check(&checks, force) {
         bail!(EzError::UserMessage(
             "sync aborted — resolve the issues above or use `ez sync --force`".to_string()
