@@ -231,8 +231,10 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Fork { remote, from } => cmd::fork::run(remote.as_deref(), from.as_deref()),
         Commands::Config(args) => match args.command {
             ConfigCommands::List => cmd::config::list(),
-            ConfigCommands::Get { key } => cmd::config::get(&key),
-            ConfigCommands::Set { key, value } => cmd::config::set(&key, &value),
+            ConfigCommands::Get { key, branch } => cmd::config::get(&key, branch.as_deref()),
+            ConfigCommands::Set { key, value, branch } => {
+                cmd::config::set(&key, &value, branch.as_deref())
+            }
         },
         Commands::Worktree(args) => match args.command {
             WorktreeCommands::Create { name, from } => {

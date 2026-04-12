@@ -576,10 +576,15 @@ Examples:
     #[command(after_help = "\
 Examples:
   ez config get trunk
-  ez config get remote")]
+  ez config get remote
+  ez config get pr_repo --branch feat/x")]
     Get {
         /// Config key to read
         key: String,
+
+        /// Read from a specific branch (use without value for current branch)
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
+        branch: Option<String>,
     },
 
     /// Set a config key to a new value
@@ -588,13 +593,21 @@ Examples:
   ez config set trunk develop
   ez config set remote fork
   ez config set default_from dev
-  ez config set repo owner/name")]
+  ez config set repo owner/name
+  ez config set remote fork --branch feat/x
+  ez config set pr owner/repo#45
+  ez config set branch.pr_repo owner/repo
+  ez config set pr_number 123 --branch")]
     Set {
-        /// Config key to update
+        /// Config key to update (branch attrs: pr, pr_repo, pr_number, push_remote, scope, scope_mode, parent)
         key: String,
 
         /// New value
         value: String,
+
+        /// Apply to a specific branch (use without value for current branch)
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
+        branch: Option<String>,
     },
 }
 
