@@ -92,6 +92,15 @@ pub(crate) fn switch_to(
              Or enable auto-cd: eval \"$(ez shell-init)\""
         ));
         println!("{wt_path}");
+    } else if state.is_managed(target) {
+        // Managed branch without a worktree — create one and cd into it.
+        let wt_path = git::worktree_path(target)?;
+        git::worktree_add(&wt_path, target)?;
+        ui::success(&format!(
+            "Created worktree for `{target}` → {wt_path}"
+        ));
+        ui::hint(&super::create::worktree_edit_hint(&wt_path));
+        println!("{wt_path}");
     } else {
         git::checkout(target)?;
         ui::success(&format!("Switched to `{target}`"));

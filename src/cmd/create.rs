@@ -216,7 +216,7 @@ fn scope_mode_str(mode: ScopeMode) -> &'static str {
     }
 }
 
-fn worktree_edit_hint(wt_path: &str) -> String {
+pub(crate) fn worktree_edit_hint(wt_path: &str) -> String {
     format!(
         "Edit files under `{wt_path}`. This branch lives in a linked worktree, not the main repo checkout."
     )
