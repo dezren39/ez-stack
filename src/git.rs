@@ -1189,4 +1189,35 @@ exit 0
         let wt = wt_list.iter().find(|w| w.path == wt_path).expect("found worktree");
         assert_eq!(wt.branch.as_deref(), Some("feat/wt-test"));
     }
+
+    #[test]
+    fn remote_exists_returns_false_when_no_remotes() {
+        let _guard = take_env_lock();
+        let repo = init_git_repo("git-remote-exists");
+        let _cwd = CwdGuard::enter(&repo);
+        // init_git_repo doesn't add a remote, so origin shouldn't exist.
+        assert!(!remote_exists("origin"));
+    }
+
+    #[test]
+    fn add_remote_and_check_url() {
+        let _guard = take_env_lock();
+        let repo = init_git_repo("git-add-remote");
+        let _cwd = CwdGuard::enter(&repo);
+
+        add_remote("testremote", "https://github.com/fake/repo.git").expect("add remote");
+        assert!(remote_exists("testremote"));
+
+        let url = remote_url("testremote").expect("get url");
+        assert_eq!(url.trim(), "https://github.com/fake/repo.git");
+    }
+
+    #[test]
+    fn remote_exists_returns_false_for_nonexistent() {
+        let _guard = take_env_lock();
+        let repo = init_git_repo("git-remote-nonexistent");
+        let _cwd = CwdGuard::enter(&repo);
+
+        assert!(!remote_exists("nope"));
+    }
 }
