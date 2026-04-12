@@ -361,11 +361,16 @@ Examples:
     #[command(after_help = "\
 Examples:
   ez move --onto main
-  ez move --onto feat/base")]
+  ez move --onto feat/base
+  ez move --force --onto main")]
     Move {
         /// New parent branch
         #[arg(long)]
         onto: String,
+
+        /// Force move even if merge commits or stale metadata are detected
+        #[arg(long)]
+        force: bool,
     },
 
     /// Merge the bottom PR of the current stack via GitHub

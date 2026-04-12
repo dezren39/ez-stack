@@ -1,5 +1,6 @@
 use anyhow::{Result, bail};
 
+use crate::cmd::preflight;
 use crate::cmd::rebase_conflict;
 use crate::error::EzError;
 use crate::git;
@@ -7,7 +8,7 @@ use crate::github;
 use crate::stack::StackState;
 use crate::ui;
 
-pub fn run(onto: &str) -> Result<()> {
+pub fn run(onto: &str, force: bool) -> Result<()> {
     let mut state = StackState::load()?;
     if let Some(root) = git::current_linked_worktree_root()? {
         ui::linked_worktree_warning(&root);
@@ -44,22 +45,20 @@ pub fn run(onto: &str) -> Result<()> {
         )));
     }
 
+    // Pre-flight: detect merge commits, stale metadata, and redundancy.
+    if let Some(check) = preflight::check_single(&state, &current) {
+        if preflight::report_and_check(&[check], force) {
+            bail!(EzError::UserMessage(
+                "move aborted — resolve the issues above or use `ez move --force --onto ...`"
+                    .to_string()
+            ));
+        }
+    }
+
     let meta = state.get_branch(&current)?;
     let old_parent = meta.parent.clone();
     let old_parent_head = meta.parent_head.clone();
     let pr_number = meta.pr_number;
-
-    // Pre-flight: verify parent_head is an ancestor of the current branch.
-    // If it isn't, the metadata is stale (e.g., from an out-of-band rebase)
-    // and rebase --onto would replay the wrong commits.
-    if !git::is_ancestor(&old_parent_head, &current) {
-        bail!(EzError::UserMessage(format!(
-            "Stale metadata: recorded parent head `{}` is not an ancestor of `{current}`\n  \
-             → The branch may have been rebased outside of ez.\n  \
-             → Run `ez sync` to refresh metadata, then retry `ez move --onto {onto}`",
-            &old_parent_head[..old_parent_head.len().min(7)]
-        )));
-    }
 
     let new_parent_head = git::rev_parse(onto)?;
 
