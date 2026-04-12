@@ -22,6 +22,7 @@ pub(crate) fn worktree_map() -> HashMap<String, String> {
     branch_worktree_map(git::worktree_list().unwrap_or_default())
 }
 
+#[cfg(test)]
 fn worktree_edit_hint(wt_path: &str) -> String {
     if wt_path.contains("/.worktrees/") {
         format!(
@@ -70,13 +71,26 @@ pub(crate) fn switch_to(
     state: &StackState,
     target: &str,
     wt_map: &HashMap<String, String>,
+    no_cd_required: bool,
 ) -> Result<()> {
     let stale_warning = stale_switch_target_warning(state, target)?;
 
     if let Some(wt_path) = wt_map.get(target) {
-        // Branch is in a worktree — print path to stdout for shell wrapper to cd.
-        ui::success(&format!("Switching to `{target}` in worktree `{wt_path}`"));
-        ui::hint(&worktree_edit_hint(wt_path));
+        if no_cd_required {
+            // Caller handles cd — just print path.
+            println!("{wt_path}");
+            return Ok(());
+        }
+        // Print path for shell wrapper to intercept.
+        // The wrapper does `cd $path`. Without the wrapper, this just prints the path.
+        ui::info(&format!(
+            "Branch `{target}` is in worktree `{wt_path}`"
+        ));
+        ui::hint(&format!(
+            "If your shell didn't change directory, run:\n  \
+             cd {wt_path}\n  \
+             Or enable auto-cd: eval \"$(ez shell-init)\""
+        ));
         println!("{wt_path}");
     } else {
         git::checkout(target)?;
@@ -91,7 +105,7 @@ pub(crate) fn switch_to(
     Ok(())
 }
 
-pub fn run(name: Option<&str>) -> Result<()> {
+pub fn run(name: Option<&str>, no_cd_required: bool) -> Result<()> {
     let state = StackState::load()?;
     let current = git::current_branch()?;
     let wt_map = worktree_map();
@@ -121,7 +135,7 @@ pub fn run(name: Option<&str>) -> Result<()> {
             return Ok(());
         }
 
-        switch_to(&state, &target, &wt_map)?;
+        switch_to(&state, &target, &wt_map, no_cd_required)?;
         return Ok(());
     }
 
@@ -174,7 +188,7 @@ pub fn run(name: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    switch_to(&state, selected, &wt_map)?;
+    switch_to(&state, selected, &wt_map, false)?;
 
     Ok(())
 }

@@ -420,11 +420,14 @@ fn run_sync_inner(force: bool) -> Result<()> {
             continue;
         }
 
-        // Guard: skip branches checked out in another worktree.
-        if let Ok(Some(_wt_path)) = git::branch_checked_out_elsewhere(branch_name, &original_root) {
-            ui::warn(&format!("Skipped `{branch_name}` (in worktree)"));
-            continue;
-        }
+        // Instead of skipping, detach worktree HEAD so rebase can proceed.
+        let worktree_path = if let Ok(Some(wt_path)) = git::branch_checked_out_elsewhere(branch_name, &original_root) {
+            ui::info(&format!("Detaching `{branch_name}` in worktree `{wt_path}` for rebase..."));
+            git::detach_worktree_head(&wt_path)?;
+            Some(wt_path)
+        } else {
+            None
+        };
 
         // If all commits are redundant, skip rebase and just update metadata.
         if redundant_branches.contains(branch_name) {
@@ -439,6 +442,10 @@ fn run_sync_inner(force: bool) -> Result<()> {
                 "action": "redundant_skip",
                 "parent": parent,
             }));
+            // Reattach worktree if we detached it.
+            if let Some(ref wt_path) = worktree_path {
+                let _ = git::reattach_worktree(wt_path, branch_name);
+            }
             restacked += 1;
             continue;
         }
@@ -518,8 +525,22 @@ fn run_sync_inner(force: bool) -> Result<()> {
                     "redundant_commits": redundant_count,
                     "safe_rebase_mode": has_merges,
                 }));
+
+                // Reattach worktree if we detached it.
+                if let Some(ref wt_path) = worktree_path {
+                    if !git::reattach_worktree(wt_path, branch_name)? {
+                        ui::warn(&format!(
+                            "Could not reattach `{branch_name}` in worktree `{wt_path}` — \
+                             worktree may have dirty files that conflict with rebased commits.\n  \
+                             Run `cd {wt_path} && git checkout {branch_name}` to reattach manually."
+                        ));
+                    }
+                }
             }
             git::RebaseOutcome::Conflict(conflict) => {
+                if let Some(ref wt_path) = worktree_path {
+                    let _ = git::reattach_worktree(wt_path, branch_name);
+                }
                 // Save progress so the user can fix and continue.
                 state.save()?;
                 rebase_conflict::report("sync", branch_name, &parent, &conflict, "ez restack");
