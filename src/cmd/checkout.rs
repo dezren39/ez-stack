@@ -158,7 +158,8 @@ pub fn run(name: Option<&str>, no_cd_required: bool) -> Result<()> {
             if let Some(meta) = state.branches.get(name)
                 && let Some(pr_number) = meta.pr_number
             {
-                if let Ok(Some(pr)) = github::get_pr_status(name) {
+                let effective_repo = state.effective_pr_repo(name);
+                if let Ok(Some(pr)) = github::get_pr_status_in_repo(name, effective_repo.as_deref()) {
                     return format!(
                         "{} {}",
                         branch_text,
@@ -209,6 +210,8 @@ mod tests {
                 parent: "main".to_string(),
                 parent_head: "abc".to_string(),
                 pr_number: Some(99),
+                pr_repo: None,
+                push_remote: None,
                 scope: None,
                 scope_mode: None,
             },

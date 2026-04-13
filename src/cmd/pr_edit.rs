@@ -22,6 +22,7 @@ pub fn run(title: Option<&str>, body: Option<&str>, body_file: Option<&str>) -> 
     let pr_number = meta.pr_number.ok_or_else(|| {
         anyhow::anyhow!("No PR found for branch `{current}` — run `ez push` to create one first")
     })?;
+    let effective_repo = state.effective_pr_repo(&current);
 
     // If no explicit edits, open $EDITOR with the current PR body.
     if title.is_none() && body.is_none() && body_file.is_none() {
@@ -29,7 +30,7 @@ pub fn run(title: Option<&str>, body: Option<&str>, body_file: Option<&str>) -> 
             .or_else(|_| std::env::var("EDITOR"))
             .unwrap_or_else(|_| "vi".to_string());
 
-        let body_current = github::get_pr_body(pr_number)?;
+        let body_current = github::get_pr_body_in_repo(pr_number, effective_repo.as_deref())?;
         let tmp_path = format!("/tmp/ez-pr-{pr_number}.md");
         std::fs::write(&tmp_path, &body_current)?;
 
@@ -52,9 +53,9 @@ pub fn run(title: Option<&str>, body: Option<&str>, body_file: Option<&str>) -> 
             return Ok(());
         }
 
-        github::edit_pr(pr_number, None, Some(&new_body))?;
+        github::edit_pr_in_repo(pr_number, None, Some(&new_body), effective_repo.as_deref())?;
 
-        if let Ok(Some(pr)) = github::get_pr_status(&current) {
+        if let Ok(Some(pr)) = github::get_pr_status_in_repo(&current, effective_repo.as_deref()) {
             ui::success(&format!("Updated PR #{}: {}", pr.number, pr.url));
         } else {
             ui::success(&format!("Updated PR #{pr_number} body"));
@@ -68,9 +69,9 @@ pub fn run(title: Option<&str>, body: Option<&str>, body_file: Option<&str>) -> 
         body.map(|s| s.to_string())
     };
 
-    github::edit_pr(pr_number, title, resolved_body.as_deref())?;
+    github::edit_pr_in_repo(pr_number, title, resolved_body.as_deref(), effective_repo.as_deref())?;
 
-    if let Ok(Some(pr)) = github::get_pr_status(&current) {
+    if let Ok(Some(pr)) = github::get_pr_status_in_repo(&current, effective_repo.as_deref()) {
         ui::success(&format!("Updated PR #{}: {}", pr.number, pr.url));
     } else {
         ui::success(&format!("Updated PR #{pr_number}"));

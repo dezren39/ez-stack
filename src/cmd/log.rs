@@ -10,7 +10,6 @@ pub fn run(json: bool) -> Result<()> {
 
     if json {
         let order = state.topo_order();
-        let repo = github::repo_name().ok().unwrap_or_default();
 
         let entries: Vec<serde_json::Value> = order
             .iter()
@@ -21,12 +20,17 @@ pub fn run(json: bool) -> Result<()> {
 
                 let (pr_number, pr_url, pr_state, is_draft) = match meta.pr_number {
                     Some(n) => {
+                        // Prefer per-branch pr_repo for URL construction.
+                        let repo = state.effective_pr_repo(branch)
+                            .or_else(|| github::repo_name().ok())
+                            .unwrap_or_default();
                         let url = if repo.is_empty() {
                             serde_json::Value::Null
                         } else {
                             serde_json::Value::String(format!("https://github.com/{repo}/pull/{n}"))
                         };
-                        let (state_str, draft) = github::get_pr_status(branch)
+                        let effective_repo = state.effective_pr_repo(branch);
+                        let (state_str, draft) = github::get_pr_status_in_repo(branch, effective_repo.as_deref())
                             .ok()
                             .flatten()
                             .map(|pr| (pr.state, pr.is_draft))
@@ -102,6 +106,7 @@ fn render_tree(
 ) -> Result<()> {
     let is_current = branch == current;
     let meta = state.get_branch(branch)?;
+    let effective_repo = state.effective_pr_repo(branch);
 
     // Build the display text for this branch
     let name_display = ui::branch_display(branch, is_current);
@@ -119,7 +124,7 @@ fn render_tree(
 
     // Get PR badge if available
     let pr_text = if let Some(pr_number) = meta.pr_number {
-        if let Ok(Some(pr)) = github::get_pr_status(branch) {
+        if let Ok(Some(pr)) = github::get_pr_status_in_repo(branch, effective_repo.as_deref()) {
             let badge = ui::pr_badge(pr.number, &pr.state, pr.is_draft);
             let state_label = if pr.is_draft {
                 "draft".to_string()
@@ -136,7 +141,7 @@ fn render_tree(
 
     // Get CI status (best-effort, empty string if unavailable).
     let ci_text = if meta.pr_number.is_some() {
-        let ci = github::get_ci_status(branch);
+        let ci = github::get_ci_status_in_repo(branch, effective_repo.as_deref());
         if ci.is_empty() {
             String::new()
         } else {
@@ -203,6 +208,8 @@ mod tests {
                 parent: "main".to_string(),
                 parent_head: "abc".to_string(),
                 pr_number: Some(1),
+                pr_repo: None,
+                push_remote: None,
                 scope: None,
                 scope_mode: None,
             },
@@ -214,6 +221,8 @@ mod tests {
                 parent: "feat/a".to_string(),
                 parent_head: "def".to_string(),
                 pr_number: None,
+                pr_repo: None,
+                push_remote: None,
                 scope: None,
                 scope_mode: None,
             },

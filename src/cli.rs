@@ -138,7 +138,8 @@ Examples:
   ez push --draft
   ez push --stack
   ez push -am \"feat: add auth\"
-  ez push -Am \"feat: add auth and new snapshots\"")]
+  ez push -Am \"feat: add auth and new snapshots\"
+  ez push --repo owner/repo")]
     Push {
         /// Create a draft PR
         #[arg(long, conflicts_with = "no_pr")]
@@ -188,6 +189,10 @@ Examples:
         /// Commit with this message before pushing
         #[arg(short = 'm', long)]
         message: Option<String>,
+
+        /// Target repository for PR creation (owner/repo), overrides config
+        #[arg(long)]
+        repo: Option<String>,
     },
 
     /// Push and create/update PRs for the entire stack
@@ -195,6 +200,7 @@ Examples:
 Examples:
   ez submit
   ez submit --draft
+  ez submit --repo owner/repo
 
 Note: --draft only affects newly created PRs. Existing PRs are not changed.
 Use `ez ready` to undraft an existing PR.")]
@@ -218,6 +224,10 @@ Use `ez ready` to undraft an existing PR.")]
         /// PR body from file
         #[arg(long)]
         body_file: Option<String>,
+
+        /// Target repository for PR creation (owner/repo), overrides config
+        #[arg(long)]
+        repo: Option<String>,
     },
 
     /// Fetch trunk, detect merged PRs, clean up, and restack
@@ -473,6 +483,23 @@ Examples:
   eval \"$(ez shell-init)\"")]
     ShellInit,
 
+    /// Configure fork-based workflow (fork upstream, add remote, set PR target)
+    #[command(after_help = "\
+Examples:
+  ez fork
+  ez fork --remote mine
+  ez fork --from user
+  ez fork --from user/custom-repo")]
+    Fork {
+        /// Name for the fork remote (default: fork)
+        #[arg(long)]
+        remote: Option<String>,
+
+        /// Add an existing fork by GitHub user or user/repo
+        #[arg(long)]
+        from: Option<String>,
+    },
+
     /// View and update ez settings for the current repo
     Config(ConfigArgs),
 
@@ -549,10 +576,15 @@ Examples:
     #[command(after_help = "\
 Examples:
   ez config get trunk
-  ez config get remote")]
+  ez config get remote
+  ez config get pr_repo --branch feat/x")]
     Get {
         /// Config key to read
         key: String,
+
+        /// Read from a specific branch (use without value for current branch)
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
+        branch: Option<String>,
     },
 
     /// Set a config key to a new value
@@ -561,13 +593,21 @@ Examples:
   ez config set trunk develop
   ez config set remote fork
   ez config set default_from dev
-  ez config set repo owner/name")]
+  ez config set repo owner/name
+  ez config set remote fork --branch feat/x
+  ez config set pr owner/repo#45
+  ez config set branch.pr_repo owner/repo
+  ez config set pr_number 123 --branch")]
     Set {
-        /// Config key to update
+        /// Config key to update (branch attrs: pr, pr_repo, pr_number, push_remote, scope, scope_mode, parent)
         key: String,
 
         /// New value
         value: String,
+
+        /// Apply to a specific branch (use without value for current branch)
+        #[arg(long, num_args = 0..=1, default_missing_value = "")]
+        branch: Option<String>,
     },
 }
 
@@ -851,6 +891,65 @@ mod tests {
                 assert!(stack);
             }
             _ => panic!("expected merge command"),
+        }
+    }
+
+    #[test]
+    fn parses_push_repo_flag() {
+        let cli = Cli::try_parse_from(["ez", "push", "--repo", "owner/repo"])
+            .expect("parse push --repo");
+
+        match cli.command {
+            Commands::Push { repo, no_pr, .. } => {
+                assert_eq!(repo.as_deref(), Some("owner/repo"));
+                assert!(!no_pr);
+            }
+            _ => panic!("expected push command"),
+        }
+    }
+
+    #[test]
+    fn parses_push_repo_with_other_flags() {
+        let cli = Cli::try_parse_from([
+            "ez", "push", "--draft", "--repo", "user/fork-repo", "--title", "my pr",
+        ])
+        .expect("parse push --repo with other flags");
+
+        match cli.command {
+            Commands::Push {
+                repo, draft, title, ..
+            } => {
+                assert_eq!(repo.as_deref(), Some("user/fork-repo"));
+                assert!(draft);
+                assert_eq!(title.as_deref(), Some("my pr"));
+            }
+            _ => panic!("expected push command"),
+        }
+    }
+
+    #[test]
+    fn parses_submit_repo_flag() {
+        let cli = Cli::try_parse_from(["ez", "submit", "--repo", "upstream/repo"])
+            .expect("parse submit --repo");
+
+        match cli.command {
+            Commands::Submit { repo, draft, .. } => {
+                assert_eq!(repo.as_deref(), Some("upstream/repo"));
+                assert!(!draft);
+            }
+            _ => panic!("expected submit command"),
+        }
+    }
+
+    #[test]
+    fn push_repo_defaults_to_none() {
+        let cli = Cli::try_parse_from(["ez", "push"]).expect("parse push without --repo");
+
+        match cli.command {
+            Commands::Push { repo, .. } => {
+                assert!(repo.is_none(), "--repo should default to None");
+            }
+            _ => panic!("expected push command"),
         }
     }
 }

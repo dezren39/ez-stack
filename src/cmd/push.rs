@@ -53,9 +53,10 @@ pub fn run(
     stage_all: bool,
     stage_all_files: bool,
     commit_message: Option<&str>,
+    repo_override: Option<&str>,
 ) -> Result<()> {
     if stack {
-        return crate::cmd::submit::run(draft, no_draft, title, body, body_file);
+        return crate::cmd::submit::run(draft, no_draft, title, body, body_file, repo_override);
     }
 
     if let Some(root) = git::current_linked_worktree_root()? {
@@ -113,7 +114,7 @@ pub fn run(
         bail!(EzError::BranchNotInStack(current.clone()));
     }
 
-    let remote = &state.remote.clone();
+    let remote = state.effective_push_remote(&current);
 
     // Resolve --no-pr: flag > config > false
     let skip_pr = no_pr || state.no_pr.unwrap_or(false);
@@ -140,8 +141,8 @@ pub fn run(
 
     // Push the branch with force-with-lease.
     let sp = ui::spinner(&format!("Pushing `{current}`..."));
-    git::fetch_branch(remote, &current)?;
-    git::push(remote, &current, true)?;
+    git::fetch_branch(&remote, &current)?;
+    git::push(&remote, &current, true)?;
     sp.finish_and_clear();
     ui::info(&format!("Pushed `{current}`"));
 
@@ -177,6 +178,7 @@ pub fn run(
         title,
         resolved_body.as_deref(),
         body_explicitly_set,
+        repo_override,
     )?;
 
     let pr_number = state.get_branch(&current).ok().and_then(|m| m.pr_number);
@@ -201,6 +203,9 @@ pub fn run(
 
 /// Push-or-update logic shared with the `submit` command.
 ///
+/// Repo resolution order: `repo_override` (CLI --repo) > `branch.pr_repo` (stored from first push) > `state.repo` (global config) > None.
+/// When `--repo` is explicitly passed, the value is stored in `branch.pr_repo` so future pushes reuse it.
+///
 /// Returns the PR URL.
 pub fn push_or_update_pr(
     state: &mut StackState,
@@ -210,12 +215,24 @@ pub fn push_or_update_pr(
     title_override: Option<&str>,
     body_override: Option<&str>,
     body_explicitly_set: bool,
+    repo_override: Option<&str>,
 ) -> Result<String> {
+    // Normalize repo shorthand (e.g. "fork" → "owner/repo" from remote URL).
+    let resolved_override: Option<String> =
+        repo_override.map(|s| github::resolve_repo_shorthand(s));
+    // Resolve effective repo: CLI flag > stored per-branch > global config > None
+    let effective_repo: Option<String> = resolved_override
+        .clone()
+        .or_else(|| state.effective_pr_repo(branch));
+
+    // Resolve the push remote for cross-fork head prefix.
+    let push_remote = state.effective_push_remote(branch);
+
     // Collect upstream ancestor PRs for the stack section.
     // path_to_trunk returns [branch, ..., trunk]; we want ancestors only.
     let ancestors = stack_ancestors(state, branch, &github::repo_name().unwrap_or_default());
 
-    let existing_pr = github::get_pr_status(branch)?;
+    let existing_pr = github::get_pr_status_in_repo(branch, effective_repo.as_deref())?;
 
     let pr_url = match existing_pr {
         Some(pr) => {
@@ -227,7 +244,11 @@ pub fn push_or_update_pr(
             // clobber a manual `gh pr edit --base` change.
             if pr.base != parent {
                 if git::is_ancestor(parent, branch) {
-                    if let Err(e) = github::update_pr_base(pr.number, parent) {
+                    if let Err(e) = github::update_pr_base_in_repo(
+                        pr.number,
+                        parent,
+                        effective_repo.as_deref(),
+                    ) {
                         ui::warn(&format!(
                             "Push succeeded but PR #{} base could not be updated to `{parent}`: {e}",
                             pr.number
@@ -248,7 +269,12 @@ pub fn push_or_update_pr(
             if body_explicitly_set {
                 let raw_body = body_override.unwrap_or("Part of a stack managed by `ez`.");
                 let body = crate::stack_body::build_stack_body(&ancestors, raw_body);
-                if let Err(e) = github::edit_pr(pr.number, title_override, Some(&body)) {
+                if let Err(e) = github::edit_pr_in_repo(
+                    pr.number,
+                    title_override,
+                    Some(&body),
+                    effective_repo.as_deref(),
+                ) {
                     ui::warn(&format!(
                         "Push succeeded but PR #{} could not be updated: {e}",
                         pr.number
@@ -257,7 +283,9 @@ pub fn push_or_update_pr(
                     ui::info(&format!("Updated PR #{}", pr.number));
                 }
             } else if title_override.is_some() {
-                if let Err(e) = github::edit_pr(pr.number, title_override, None) {
+                if let Err(e) =
+                    github::edit_pr_in_repo(pr.number, title_override, None, effective_repo.as_deref())
+                {
                     ui::warn(&format!(
                         "Push succeeded but PR #{} title could not be updated: {e}",
                         pr.number
@@ -285,8 +313,22 @@ pub fn push_or_update_pr(
             // Always append stack section to new PRs.
             let body = crate::stack_body::build_stack_body(&ancestors, raw_body);
 
-            let pr = github::create_pr(title, &body, parent, branch, draft)?;
+            // Compute cross-fork --head value.
+            let head = github::cross_fork_head(branch, &push_remote, effective_repo.as_deref());
+
+            let pr = github::create_pr_in_repo(
+                title,
+                &body,
+                parent,
+                &head,
+                draft,
+                effective_repo.as_deref(),
+            )?;
             state.get_branch_mut(branch)?.pr_number = Some(pr.number);
+            // Only persist pr_repo when --repo was explicitly passed on the CLI.
+            if let Some(ref r) = resolved_override {
+                state.get_branch_mut(branch)?.pr_repo = Some(r.clone());
+            }
             ui::info(&format!("Created PR #{}: {}", pr.number, pr.url));
             pr.url
         }
@@ -298,6 +340,7 @@ pub fn push_or_update_pr(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{CwdGuard, init_git_repo, take_env_lock};
 
     #[test]
     fn stack_ancestors_orders_trunk_closest_first_and_builds_urls() {
@@ -433,5 +476,135 @@ mod tests {
         let config_no_pr: Option<bool> = None;
         let skip = no_pr || config_no_pr.unwrap_or(false);
         assert!(!skip, "default should be false");
+    }
+
+    #[test]
+    fn repo_override_replaces_stored_and_config() {
+        // CLI --repo flag > stored pr_repo > config repo
+        let mut state = StackState::new("main".to_string());
+        state.repo = Some("config/repo".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+        state.get_branch_mut("feat/a").unwrap().pr_repo = Some("stored/repo".to_string());
+
+        let repo_override: Option<&str> = Some("cli/override");
+        let effective = repo_override
+            .map(|s| s.to_string())
+            .or_else(|| state.effective_pr_repo("feat/a"));
+        assert_eq!(effective.as_deref(), Some("cli/override"));
+    }
+
+    #[test]
+    fn repo_resolution_stored_overrides_config() {
+        // No CLI flag: stored pr_repo > config repo
+        let mut state = StackState::new("main".to_string());
+        state.repo = Some("config/repo".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+        state.get_branch_mut("feat/a").unwrap().pr_repo = Some("stored/repo".to_string());
+
+        let repo_override: Option<&str> = None;
+        let effective = repo_override
+            .map(|s| s.to_string())
+            .or_else(|| state.effective_pr_repo("feat/a"));
+        assert_eq!(effective.as_deref(), Some("stored/repo"));
+    }
+
+    #[test]
+    fn repo_resolution_falls_back_to_config() {
+        // No CLI flag, no stored pr_repo: config repo is used
+        // Run in a temp repo with no remotes so git fallbacks don't interfere
+        let _guard = take_env_lock();
+        let dir = init_git_repo("push-repo-config-fallback");
+        let _cwd = CwdGuard::enter(&dir);
+
+        let mut state = StackState::new("main".to_string());
+        state.repo = Some("config/repo".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+
+        let repo_override: Option<&str> = None;
+        let effective = repo_override
+            .map(|s| s.to_string())
+            .or_else(|| state.effective_pr_repo("feat/a"));
+        assert_eq!(effective.as_deref(), Some("config/repo"));
+    }
+
+    #[test]
+    fn repo_resolution_none_when_nothing_set() {
+        // No CLI flag, no stored, no config: None
+        // Run in a temp repo with no remotes so git fallbacks don't interfere
+        let _guard = take_env_lock();
+        let dir = init_git_repo("push-repo-none");
+        let _cwd = CwdGuard::enter(&dir);
+
+        let mut state = StackState::new("main".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+
+        let repo_override: Option<&str> = None;
+        let effective = repo_override
+            .map(|s| s.to_string())
+            .or_else(|| state.effective_pr_repo("feat/a"));
+        assert!(effective.is_none());
+    }
+
+    #[test]
+    fn repo_resolution_skips_empty_config_string() {
+        // Config repo is empty string (old state format): should fall through
+        let mut state = StackState::new("main".to_string());
+        state.repo = Some(String::new());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+        state.get_branch_mut("feat/a").unwrap().pr_repo = Some("stored/repo".to_string());
+
+        let repo_override: Option<&str> = None;
+        let effective = repo_override
+            .map(|s| s.to_string())
+            .or_else(|| state.effective_pr_repo("feat/a"));
+        assert_eq!(effective.as_deref(), Some("stored/repo"));
+    }
+
+    #[test]
+    fn pr_repo_stored_only_when_cli_flag_passed() {
+        // Simulate: --repo was passed, so pr_repo gets stored
+        let mut state = StackState::new("main".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+        assert!(state.get_branch("feat/a").unwrap().pr_repo.is_none());
+
+        let repo_override: Option<&str> = Some("target/repo");
+        state.get_branch_mut("feat/a").unwrap().pr_number = Some(42);
+        if let Some(r) = repo_override {
+            state.get_branch_mut("feat/a").unwrap().pr_repo = Some(r.to_string());
+        }
+
+        assert_eq!(state.get_branch("feat/a").unwrap().pr_repo.as_deref(), Some("target/repo"));
+    }
+
+    #[test]
+    fn pr_repo_not_stored_when_only_config_used() {
+        // Simulate: no --repo flag, PR created via config repo — pr_repo stays None
+        let mut state = StackState::new("main".to_string());
+        state.repo = Some("config/repo".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+
+        let repo_override: Option<&str> = None;
+        state.get_branch_mut("feat/a").unwrap().pr_number = Some(42);
+        if let Some(r) = repo_override {
+            state.get_branch_mut("feat/a").unwrap().pr_repo = Some(r.to_string());
+        }
+
+        assert!(
+            state.get_branch("feat/a").unwrap().pr_repo.is_none(),
+            "pr_repo should not be set when config repo was used without --repo flag"
+        );
+    }
+
+    #[test]
+    fn pr_repo_not_overwritten_on_update() {
+        // When a PR already exists, pr_repo should stay unchanged
+        let mut state = StackState::new("main".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+        state.get_branch_mut("feat/a").unwrap().pr_number = Some(42);
+        state.get_branch_mut("feat/a").unwrap().pr_repo = Some("original/repo".to_string());
+
+        // push_or_update_pr only sets pr_repo in the None (new PR) branch
+        // Existing PR path just updates pr_number, doesn't touch pr_repo
+        assert_eq!(state.get_branch("feat/a").unwrap().pr_repo.as_deref(), Some("original/repo"));
     }
 }

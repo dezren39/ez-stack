@@ -25,8 +25,9 @@ pub fn run(ready: bool) -> Result<()> {
             "No PR found for `{current}` — run `ez push` to create one first"
         ))
     })?;
+    let effective_repo = state.effective_pr_repo(&current);
 
-    github::set_pr_ready(pr_number, ready)?;
+    github::set_pr_ready_in_repo(pr_number, ready, effective_repo.as_deref())?;
 
     if ready {
         ui::success(&format!("PR #{pr_number} marked as ready for review"));

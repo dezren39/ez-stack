@@ -19,13 +19,17 @@ pub fn run() -> Result<()> {
             "No PR found for `{current}` — run `ez push` to create one first"
         ))
     })?;
+    let effective_repo = state.effective_pr_repo(&current);
 
     // Try to construct URL from repo name (fast, no extra API call).
-    let url = if let Ok(repo) = github::repo_name() {
+    // Prefer per-branch pr_repo so fork workflows point to the upstream PR.
+    let url = if let Some(ref repo) = effective_repo {
+        format!("https://github.com/{repo}/pull/{pr_number}")
+    } else if let Ok(repo) = github::repo_name() {
         format!("https://github.com/{repo}/pull/{pr_number}")
     } else {
         // Fall back to gh API.
-        github::get_pr_status(&current)?
+        github::get_pr_status_in_repo(&current, effective_repo.as_deref())?
             .ok_or_else(|| EzError::UserMessage(format!("Could not find PR #{pr_number}")))?
             .url
     };

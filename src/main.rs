@@ -157,6 +157,7 @@ fn run(cli: Cli) -> Result<()> {
             stage_all,
             stage_all_files,
             message,
+            repo,
         } => cmd::push::run(
             draft,
             no_draft,
@@ -169,6 +170,7 @@ fn run(cli: Cli) -> Result<()> {
             stage_all,
             stage_all_files,
             message.as_deref(),
+            repo.as_deref(),
         ),
         Commands::Submit {
             draft,
@@ -176,12 +178,14 @@ fn run(cli: Cli) -> Result<()> {
             title,
             body,
             body_file,
+            repo,
         } => cmd::submit::run(
             draft,
             no_draft,
             title.as_deref(),
             body.as_deref(),
             body_file.as_deref(),
+            repo.as_deref(),
         ),
         Commands::Sync {
             dry_run,
@@ -224,10 +228,13 @@ fn run(cli: Cli) -> Result<()> {
             SkillCommands::Uninstall => cmd::skill::uninstall(),
         },
         Commands::ShellInit => cmd::shell_init::run(),
+        Commands::Fork { remote, from } => cmd::fork::run(remote.as_deref(), from.as_deref()),
         Commands::Config(args) => match args.command {
             ConfigCommands::List => cmd::config::list(),
-            ConfigCommands::Get { key } => cmd::config::get(&key),
-            ConfigCommands::Set { key, value } => cmd::config::set(&key, &value),
+            ConfigCommands::Get { key, branch } => cmd::config::get(&key, branch.as_deref()),
+            ConfigCommands::Set { key, value, branch } => {
+                cmd::config::set(&key, &value, branch.as_deref())
+            }
         },
         Commands::Worktree(args) => match args.command {
             WorktreeCommands::Create { name, from } => {

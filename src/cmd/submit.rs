@@ -22,11 +22,13 @@ pub fn run(
     title: Option<&str>,
     body: Option<&str>,
     body_file: Option<&str>,
+    repo_override: Option<&str>,
 ) -> Result<()> {
     let mut state = StackState::load()?;
     if let Some(root) = git::current_linked_worktree_root()? {
         ui::linked_worktree_warning(&root);
     }
+
     let current = git::current_branch()?;
 
     if state.is_trunk(&current) {
@@ -61,12 +63,14 @@ pub fn run(
         return Ok(());
     }
 
-    let remote = state.remote.clone();
     let body_explicitly_set = body.is_some() || body_file.is_some();
     let mut pr_urls: Vec<(String, String)> = Vec::new();
 
     for branch in &branches_to_submit {
         let parent = state.get_branch(branch)?.parent.clone();
+
+        // Resolve push remote per-branch.
+        let remote = state.effective_push_remote(branch);
 
         // Push with force-with-lease.
         let sp = ui::spinner(&format!("Pushing `{branch}`..."));
@@ -83,6 +87,7 @@ pub fn run(
             title,
             resolved_body.as_deref(),
             body_explicitly_set,
+            repo_override,
         )?;
 
         let pr_number = state.get_branch(branch).ok().and_then(|m| m.pr_number);

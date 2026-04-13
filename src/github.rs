@@ -33,11 +33,29 @@ pub fn body_from_file(path: &str) -> Result<String> {
 }
 
 pub fn create_pr(title: &str, body: &str, base: &str, head: &str, draft: bool) -> Result<PrInfo> {
+    create_pr_in_repo(title, body, base, head, draft, None)
+}
+
+pub fn create_pr_in_repo(
+    title: &str,
+    body: &str,
+    base: &str,
+    head: &str,
+    draft: bool,
+    repo: Option<&str>,
+) -> Result<PrInfo> {
     let mut args = vec![
         "pr", "create", "--title", title, "--body", body, "--base", base, "--head", head,
     ];
     if draft {
         args.push("--draft");
+    }
+    // Owned string to keep the borrow alive for the args slice.
+    let repo_arg: String;
+    if let Some(r) = repo {
+        repo_arg = r.to_string();
+        args.push("--repo");
+        args.push(&repo_arg);
     }
     let url = run_gh(&args)?;
 
@@ -60,18 +78,41 @@ pub fn create_pr(title: &str, body: &str, base: &str, head: &str, draft: bool) -
 }
 
 pub fn update_pr_base(pr_number: u64, new_base: &str) -> Result<()> {
-    run_gh(&["pr", "edit", &pr_number.to_string(), "--base", new_base])?;
+    update_pr_base_in_repo(pr_number, new_base, None)
+}
+
+pub fn update_pr_base_in_repo(pr_number: u64, new_base: &str, repo: Option<&str>) -> Result<()> {
+    let num = pr_number.to_string();
+    let mut args: Vec<&str> = vec!["pr", "edit", &num, "--base", new_base];
+    let repo_arg: String;
+    if let Some(r) = repo {
+        repo_arg = r.to_string();
+        args.push("--repo");
+        args.push(&repo_arg);
+    }
+    run_gh(&args)?;
     Ok(())
 }
 
 pub fn get_pr_status(branch: &str) -> Result<Option<PrInfo>> {
-    let output = run_gh(&[
+    get_pr_status_in_repo(branch, None)
+}
+
+pub fn get_pr_status_in_repo(branch: &str, repo: Option<&str>) -> Result<Option<PrInfo>> {
+    let mut args = vec![
         "pr",
         "view",
         branch,
         "--json",
         "number,url,state,title,isDraft,mergedAt,baseRefName",
-    ]);
+    ];
+    let repo_arg: String;
+    if let Some(r) = repo {
+        repo_arg = r.to_string();
+        args.push("--repo");
+        args.push(&repo_arg);
+    }
+    let output = run_gh(&args);
 
     match output {
         Ok(json_str) => {
@@ -91,11 +132,18 @@ pub fn get_pr_status(branch: &str) -> Result<Option<PrInfo>> {
 }
 
 pub fn get_all_pr_statuses() -> std::collections::HashMap<String, PrInfo> {
+    get_all_pr_statuses_in_repo(None)
+}
+
+pub fn get_all_pr_statuses_in_repo(repo: Option<&str>) -> std::collections::HashMap<String, PrInfo> {
     let mut map = std::collections::HashMap::new();
     let mut page = 1;
 
     loop {
-        let route = format!("repos/{{owner}}/{{repo}}/pulls?state=all&per_page=100&page={page}");
+        let route = match repo {
+            Some(r) => format!("repos/{r}/pulls?state=all&per_page=100&page={page}"),
+            None => format!("repos/{{owner}}/{{repo}}/pulls?state=all&per_page=100&page={page}"),
+        };
         let output = run_gh(&["api", &route]);
 
         let Ok(json_str) = output else {
@@ -152,28 +200,16 @@ fn pr_info_from_rest_value(value: &serde_json::Value) -> Option<(String, PrInfo)
     ))
 }
 
-pub fn merge_pr(pr_number: u64, method: &str) -> Result<()> {
-    let repo = repo_name()?;
-    let route = format!("repos/{repo}/pulls/{pr_number}/merge");
-    let response = run_gh(&[
-        "api",
-        "-X",
-        "PUT",
-        &route,
-        "-f",
-        &format!("merge_method={method}"),
-    ])?;
-
-    let value: serde_json::Value = serde_json::from_str(&response)?;
-    if value["merged"].as_bool().unwrap_or(false) {
-        return Ok(());
-    }
-
-    let message = value["message"].as_str().unwrap_or("merge failed");
-    bail!(EzError::GhError(message.to_string()));
+pub fn edit_pr(pr_number: u64, title: Option<&str>, body: Option<&str>) -> Result<()> {
+    edit_pr_in_repo(pr_number, title, body, None)
 }
 
-pub fn edit_pr(pr_number: u64, title: Option<&str>, body: Option<&str>) -> Result<()> {
+pub fn edit_pr_in_repo(
+    pr_number: u64,
+    title: Option<&str>,
+    body: Option<&str>,
+    repo: Option<&str>,
+) -> Result<()> {
     let number_str = pr_number.to_string();
     let mut args: Vec<&str> = vec!["pr", "edit", &number_str];
     if let Some(t) = title {
@@ -185,12 +221,31 @@ pub fn edit_pr(pr_number: u64, title: Option<&str>, body: Option<&str>) -> Resul
     if args.len() == 3 {
         anyhow::bail!("No edits specified — provide --title, --body, or --body-file");
     }
+    let repo_arg: String;
+    if let Some(r) = repo {
+        repo_arg = r.to_string();
+        args.push("--repo");
+        args.push(&repo_arg);
+    }
     run_gh(&args)?;
     Ok(())
 }
 
 pub fn is_gh_authenticated() -> bool {
     run_gh(&["auth", "status"]).is_ok()
+}
+
+/// Extract "owner/repo" from a GitHub remote URL.
+/// Handles https://github.com/owner/repo.git and git@github.com:owner/repo.git
+pub fn repo_name_from_url(url: &str) -> Option<String> {
+    let cleaned = url.trim_end_matches(".git").trim_end_matches('/');
+    if let Some(rest) = cleaned.strip_prefix("https://github.com/") {
+        Some(rest.to_string())
+    } else if let Some(rest) = cleaned.strip_prefix("git@github.com:") {
+        Some(rest.to_string())
+    } else {
+        None
+    }
 }
 
 pub fn repo_name() -> Result<String> {
@@ -208,23 +263,96 @@ pub fn repo_name() -> Result<String> {
     Ok(output)
 }
 
+/// Resolve a shorthand repo-like string into a full `owner/repo`.
+///
+/// Resolution chain for a bare name like `asd`:
+///   1. Already `owner/repo` → return as-is
+///   2. Git remote named `asd` exists → extract owner/repo from its URL
+///   3. A remote whose URL owner matches `asd` → return that remote's repo
+///   4. Current user's repo: `current_owner/asd`
+///   5. Upstream/origin owner's repo: `upstream_owner/asd`
+///   6. Return as-is (can't resolve)
+///
+/// This should NOT be used when the input might be a branch name
+/// (where `foo/bar` could mean `remote/branch`).
+pub fn resolve_repo_shorthand(value: &str) -> String {
+    let value = value.trim();
+    // Already fully qualified
+    if value.contains('/') {
+        return value.to_string();
+    }
+    // Pure number → literal (repo named "123")
+    if value.parse::<u64>().is_ok() {
+        return value.to_string();
+    }
+    // 1. Is there a git remote with this exact name?
+    if crate::git::remote_exists(value) {
+        if let Ok(url) = crate::git::remote_url(value) {
+            if let Some(repo) = repo_name_from_url(&url) {
+                return repo;
+            }
+        }
+    }
+    // 2. Is there a remote whose URL owner matches this name?
+    if let Ok(remotes_output) = std::process::Command::new("git")
+        .args(["remote"])
+        .output()
+    {
+        let remotes = String::from_utf8_lossy(&remotes_output.stdout);
+        for remote_name in remotes.lines().filter(|l| !l.is_empty()) {
+            if let Some(owner) = crate::git::remote_owner(remote_name) {
+                if owner == value {
+                    if let Ok(url) = crate::git::remote_url(remote_name) {
+                        if let Some(repo) = repo_name_from_url(&url) {
+                            return repo;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // 3. Prepend current repo owner
+    if let Ok(current) = repo_name() {
+        if let Some(owner) = current.split('/').next() {
+            return format!("{owner}/{value}");
+        }
+    }
+    // 4. Can't resolve
+    value.to_string()
+}
+
 /// Fetch the current body of a PR (raw markdown, no stack section stripped).
 pub fn get_pr_body(pr_number: u64) -> Result<String> {
-    let body = run_gh(&[
-        "pr",
-        "view",
-        &pr_number.to_string(),
-        "--json",
-        "body",
-        "-q",
-        ".body",
-    ])?;
+    get_pr_body_in_repo(pr_number, None)
+}
+
+pub fn get_pr_body_in_repo(pr_number: u64, repo: Option<&str>) -> Result<String> {
+    let num = pr_number.to_string();
+    let mut args: Vec<&str> = vec!["pr", "view", &num, "--json", "body", "-q", ".body"];
+    let repo_arg: String;
+    if let Some(r) = repo {
+        repo_arg = r.to_string();
+        args.push("--repo");
+        args.push(&repo_arg);
+    }
+    let body = run_gh(&args)?;
     Ok(body)
 }
 
 /// Open the PR for a branch in the default browser.
 pub fn open_pr_in_browser(branch: &str) -> Result<()> {
-    run_gh(&["pr", "view", "--web", branch])?;
+    open_pr_in_browser_in_repo(branch, None)
+}
+
+pub fn open_pr_in_browser_in_repo(branch: &str, repo: Option<&str>) -> Result<()> {
+    let mut args: Vec<&str> = vec!["pr", "view", "--web", branch];
+    let repo_arg: String;
+    if let Some(r) = repo {
+        repo_arg = r.to_string();
+        args.push("--repo");
+        args.push(&repo_arg);
+    }
+    run_gh(&args)?;
     Ok(())
 }
 
@@ -234,10 +362,18 @@ pub fn open_pr_in_browser(branch: &str) -> Result<()> {
 /// Returns a map of branch_name → status emoji (✓/✗/⏳).
 /// Uses the most recent run per branch.
 pub fn get_all_ci_statuses() -> std::collections::HashMap<String, String> {
+    get_all_ci_statuses_in_repo(None)
+}
+
+pub fn get_all_ci_statuses_in_repo(repo: Option<&str>) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
+    let route = match repo {
+        Some(r) => format!("repos/{r}/actions/runs?per_page=50"),
+        None => "repos/{owner}/{repo}/actions/runs?per_page=50".to_string(),
+    };
     let output = run_gh(&[
         "api",
-        "repos/{owner}/{repo}/actions/runs?per_page=50",
+        &route,
         "--jq",
         r#".workflow_runs[] | "\(.head_branch)\t\(.status)\t\(.conclusion)""#,
     ]);
@@ -269,7 +405,11 @@ pub fn get_all_ci_statuses() -> std::collections::HashMap<String, String> {
 }
 
 pub fn get_ci_status(branch: &str) -> String {
-    let output = run_gh(&[
+    get_ci_status_in_repo(branch, None)
+}
+
+pub fn get_ci_status_in_repo(branch: &str, repo: Option<&str>) -> String {
+    let mut args = vec![
         "run",
         "list",
         "--branch",
@@ -280,7 +420,14 @@ pub fn get_ci_status(branch: &str) -> String {
         "status,conclusion",
         "--jq",
         ".[0]",
-    ]);
+    ];
+    let repo_arg: String;
+    if let Some(r) = repo {
+        repo_arg = r.to_string();
+        args.push("--repo");
+        args.push(&repo_arg);
+    }
+    let output = run_gh(&args);
     match output {
         Ok(json_str) if !json_str.is_empty() && json_str != "null" => {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json_str) {
@@ -303,13 +450,69 @@ pub fn get_ci_status(branch: &str) -> String {
 /// Set or unset draft status on a PR.
 /// `ready = true` → mark ready for review; `ready = false` → mark as draft.
 pub fn set_pr_ready(pr_number: u64, ready: bool) -> Result<()> {
+    set_pr_ready_in_repo(pr_number, ready, None)
+}
+
+pub fn set_pr_ready_in_repo(pr_number: u64, ready: bool, repo: Option<&str>) -> Result<()> {
     let number = pr_number.to_string();
-    if ready {
-        run_gh(&["pr", "ready", &number])?;
+    let mut args: Vec<&str> = if ready {
+        vec!["pr", "ready", &number]
     } else {
-        run_gh(&["pr", "ready", "--undo", &number])?;
+        vec!["pr", "ready", "--undo", &number]
+    };
+    let repo_arg: String;
+    if let Some(r) = repo {
+        repo_arg = r.to_string();
+        args.push("--repo");
+        args.push(&repo_arg);
     }
+    run_gh(&args)?;
     Ok(())
+}
+
+/// Compute the cross-fork `--head` value for `gh pr create`.
+/// If the push remote owner differs from the PR target repo owner,
+/// returns `push_owner:branch`. Otherwise returns just `branch`.
+pub fn cross_fork_head(branch: &str, push_remote: &str, pr_repo: Option<&str>) -> String {
+    let Some(target_repo) = pr_repo else {
+        return branch.to_string();
+    };
+    let target_owner = target_repo.split('/').next().unwrap_or("");
+    let push_owner = crate::git::remote_owner(push_remote).unwrap_or_default();
+    if push_owner.is_empty() || push_owner == target_owner {
+        branch.to_string()
+    } else {
+        format!("{push_owner}:{branch}")
+    }
+}
+
+/// Merge a PR via the GitHub REST API.
+pub fn merge_pr(pr_number: u64, method: &str) -> Result<()> {
+    merge_pr_in_repo(pr_number, method, None)
+}
+
+pub fn merge_pr_in_repo(pr_number: u64, method: &str, repo: Option<&str>) -> Result<()> {
+    let effective_repo = match repo {
+        Some(r) => r.to_string(),
+        None => repo_name()?,
+    };
+    let route = format!("repos/{effective_repo}/pulls/{pr_number}/merge");
+    let response = run_gh(&[
+        "api",
+        "-X",
+        "PUT",
+        &route,
+        "-f",
+        &format!("merge_method={method}"),
+    ])?;
+
+    let value: serde_json::Value = serde_json::from_str(&response)?;
+    if value["merged"].as_bool().unwrap_or(false) {
+        return Ok(());
+    }
+
+    let message = value["message"].as_str().unwrap_or("merge failed");
+    bail!(EzError::GhError(message.to_string()));
 }
 
 #[cfg(test)]
@@ -595,5 +798,100 @@ exit 0
         let _path = PathGuard::install(&fake_dir);
 
         assert_eq!(get_ci_status("feature"), "");
+    }
+
+    #[test]
+    fn repo_name_from_url_parses_https() {
+        assert_eq!(
+            repo_name_from_url("https://github.com/user/repo.git"),
+            Some("user/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn repo_name_from_url_parses_https_without_dot_git() {
+        assert_eq!(
+            repo_name_from_url("https://github.com/user/repo"),
+            Some("user/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn repo_name_from_url_parses_ssh() {
+        assert_eq!(
+            repo_name_from_url("git@github.com:user/repo.git"),
+            Some("user/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn repo_name_from_url_returns_none_for_non_github() {
+        assert_eq!(
+            repo_name_from_url("https://gitlab.com/user/repo.git"),
+            None
+        );
+    }
+
+    #[test]
+    fn cross_fork_head_no_repo_returns_bare_branch() {
+        assert_eq!(cross_fork_head("feat/x", "origin", None), "feat/x");
+    }
+
+    #[test]
+    fn cross_fork_head_same_owner_returns_bare_branch() {
+        let _guard = take_env_lock();
+        let repo = crate::test_support::init_git_repo("cross-fork-same");
+        let _cwd = crate::test_support::CwdGuard::enter(&repo);
+        crate::git::add_remote("origin", "https://github.com/upstream/repo.git").ok();
+        assert_eq!(
+            cross_fork_head("feat/x", "origin", Some("upstream/repo")),
+            "feat/x"
+        );
+    }
+
+    #[test]
+    fn cross_fork_head_different_owner_prefixes_branch() {
+        let _guard = take_env_lock();
+        let repo = crate::test_support::init_git_repo("cross-fork-diff");
+        let _cwd = crate::test_support::CwdGuard::enter(&repo);
+        crate::git::add_remote("myfork", "https://github.com/myuser/repo.git").ok();
+        assert_eq!(
+            cross_fork_head("feat/x", "myfork", Some("upstream/repo")),
+            "myuser:feat/x"
+        );
+    }
+
+    #[test]
+    fn resolve_repo_shorthand_already_qualified() {
+        assert_eq!(resolve_repo_shorthand("owner/repo"), "owner/repo");
+    }
+
+    #[test]
+    fn resolve_repo_shorthand_pure_number_is_literal() {
+        assert_eq!(resolve_repo_shorthand("123"), "123");
+    }
+
+    #[test]
+    fn resolve_repo_shorthand_remote_name_resolves() {
+        let _guard = take_env_lock();
+        let repo = crate::test_support::init_git_repo("resolve-remote-name");
+        let _cwd = crate::test_support::CwdGuard::enter(&repo);
+        crate::git::add_remote("myfork", "https://github.com/dezren39/ez-stack.git").ok();
+        assert_eq!(
+            resolve_repo_shorthand("myfork"),
+            "dezren39/ez-stack"
+        );
+    }
+
+    #[test]
+    fn resolve_repo_shorthand_remote_owner_resolves() {
+        let _guard = take_env_lock();
+        let repo = crate::test_support::init_git_repo("resolve-remote-owner");
+        let _cwd = crate::test_support::CwdGuard::enter(&repo);
+        crate::git::add_remote("fork", "https://github.com/dezren39/ez-stack.git").ok();
+        assert_eq!(
+            resolve_repo_shorthand("dezren39"),
+            "dezren39/ez-stack"
+        );
     }
 }

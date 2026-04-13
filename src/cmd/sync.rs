@@ -198,7 +198,8 @@ fn run_sync_inner(force: bool) -> Result<()> {
     let has_any_prs = !cleanup_candidates.is_empty();
     let pr_statuses = if has_any_prs {
         let sp = ui::spinner("Checking PR states...");
-        let statuses = github::get_all_pr_statuses();
+        let bulk_repo = state.repo.clone().filter(|s| !s.is_empty());
+        let statuses = github::get_all_pr_statuses_in_repo(bulk_repo.as_deref());
         sp.finish_and_clear();
         statuses
     } else {

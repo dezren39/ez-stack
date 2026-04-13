@@ -90,7 +90,8 @@ pub fn run(onto: &str, force: bool) -> Result<()> {
         } else {
             onto.to_string()
         };
-        if let Err(e) = github::update_pr_base(pr, &base) {
+        let effective_repo = state.effective_pr_repo(&current);
+        if let Err(e) = github::update_pr_base_in_repo(pr, &base, effective_repo.as_deref()) {
             ui::warn(&format!("Failed to update PR base: {e}"));
         }
     }
