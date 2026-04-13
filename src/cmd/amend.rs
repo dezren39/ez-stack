@@ -66,11 +66,14 @@ pub fn run(message: Option<&str>, all: bool) -> Result<()> {
     let current_root = git::repo_root()?;
 
     for child_name in &children {
-        // Guard FIRST — before extracting old_parent_head.
-        if let Ok(Some(_wt_path)) = git::branch_checked_out_elsewhere(child_name, &current_root) {
-            ui::info(&format!("Skipped `{child_name}` (in worktree)"));
-            continue;
-        }
+        // Instead of skipping, detach worktree HEAD so rebase can proceed.
+        let worktree_path = if let Ok(Some(wt_path)) = git::branch_checked_out_elsewhere(child_name, &current_root) {
+            ui::info(&format!("Detaching `{child_name}` in worktree `{wt_path}` for rebase..."));
+            git::detach_worktree_head(&wt_path)?;
+            Some(wt_path)
+        } else {
+            None
+        };
 
         let old_parent_head = state.get_branch(child_name)?.parent_head.clone();
 
@@ -83,8 +86,22 @@ pub fn run(message: Option<&str>, all: bool) -> Result<()> {
                 let child = state.get_branch_mut(child_name)?;
                 child.parent_head = current_head.clone();
                 ui::info(&format!("Restacked `{child_name}`"));
+
+                // Reattach worktree if we detached it.
+                if let Some(ref wt_path) = worktree_path {
+                    if !git::reattach_worktree(wt_path, child_name)? {
+                        ui::warn(&format!(
+                            "Could not reattach `{child_name}` in worktree `{wt_path}` — \
+                             worktree may have dirty files that conflict with rebased commits.\n  \
+                             Run `cd {wt_path} && git checkout {child_name}` to reattach manually."
+                        ));
+                    }
+                }
             }
             git::RebaseOutcome::Conflict(conflict) => {
+                if let Some(ref wt_path) = worktree_path {
+                    let _ = git::reattach_worktree(wt_path, child_name);
+                }
                 git::checkout(&current)?;
                 state.save()?;
                 rebase_conflict::report("amend", child_name, &current, &conflict, "ez restack");

@@ -635,6 +635,21 @@ pub fn branch_checked_out_elsewhere(branch: &str, current_root: &str) -> Result<
     Ok(None)
 }
 
+/// Detach HEAD in a linked worktree so the branch ref is free for rebase.
+/// Runs `git -C <wt_path> checkout --detach HEAD`.
+pub fn detach_worktree_head(wt_path: &str) -> Result<()> {
+    run_git(&["-C", wt_path, "checkout", "--detach", "HEAD"])?;
+    Ok(())
+}
+
+/// Reattach a branch in a linked worktree after rebase.
+/// Runs `git -C <wt_path> checkout <branch>`.
+/// Returns Ok(true) if reattach succeeded, Ok(false) if it failed (e.g. dirty file conflict).
+pub fn reattach_worktree(wt_path: &str, branch: &str) -> Result<bool> {
+    let (success, _stdout, _stderr) = run_git_with_status(&["-C", wt_path, "checkout", branch])?;
+    Ok(success)
+}
+
 /// Update a local branch to the latest fetched remote-tracking ref without requiring checkout.
 ///
 /// Returns `Ok(true)` when the branch moved, `Ok(false)` when it was already up to date.
@@ -1123,5 +1138,39 @@ exit 0
             std::fs::read_to_string(repo.join("tracked.txt")).expect("tracked"),
             "remote version\n"
         );
+    }
+
+    #[test]
+    fn detach_and_reattach_worktree_round_trips() {
+        let _guard = take_env_lock();
+        let repo = init_git_repo("git-detach-reattach");
+        let _cwd = CwdGuard::enter(&repo);
+
+        // Create a branch and a worktree for it.
+        create_branch_at("feat/wt-test", "main").expect("create branch");
+        let wt_path = worktree_path("feat/wt-test").expect("worktree path");
+        worktree_add(&wt_path, "feat/wt-test").expect("add worktree");
+
+        // Verify worktree is on the branch.
+        let wt_list = worktree_list().expect("list");
+        let wt = wt_list.iter().find(|w| w.path == wt_path).expect("found worktree");
+        assert_eq!(wt.branch.as_deref(), Some("feat/wt-test"));
+
+        // Detach HEAD in the worktree.
+        detach_worktree_head(&wt_path).expect("detach");
+
+        // After detach, the worktree should show no branch (detached HEAD).
+        let wt_list = worktree_list().expect("list after detach");
+        let wt = wt_list.iter().find(|w| w.path == wt_path).expect("found worktree");
+        assert!(wt.branch.is_none(), "should be detached, got {:?}", wt.branch);
+
+        // Reattach.
+        let ok = reattach_worktree(&wt_path, "feat/wt-test").expect("reattach");
+        assert!(ok, "reattach should succeed");
+
+        // After reattach, the worktree should be on the branch again.
+        let wt_list = worktree_list().expect("list after reattach");
+        let wt = wt_list.iter().find(|w| w.path == wt_path).expect("found worktree");
+        assert_eq!(wt.branch.as_deref(), Some("feat/wt-test"));
     }
 }

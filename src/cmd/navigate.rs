@@ -50,7 +50,7 @@ pub fn up() -> Result<()> {
 
     let children = state.children_of(&current);
     let target = up_target(&children)?;
-    switch_to(&state, &target, &worktree_map())?;
+    switch_to(&state, &target, &worktree_map(), false)?;
     ui::success(&format!(
         "Moved up: {} → {}",
         ui::branch_display(&current, false),
@@ -65,7 +65,7 @@ pub fn down() -> Result<()> {
     let current = git::current_branch()?;
 
     let parent = down_target(&state, &current)?;
-    switch_to(&state, &parent, &worktree_map())?;
+    switch_to(&state, &parent, &worktree_map(), false)?;
     ui::success(&format!(
         "Moved down: {} → {}",
         ui::branch_display(&current, false),
@@ -80,7 +80,7 @@ pub fn top() -> Result<()> {
     let current = git::current_branch()?;
 
     let target = top_target(&state, &current)?;
-    switch_to(&state, &target, &worktree_map())?;
+    switch_to(&state, &target, &worktree_map(), false)?;
     ui::success(&format!(
         "Jumped to top: {} → {}",
         ui::branch_display(&current, false),
@@ -95,7 +95,7 @@ pub fn bottom() -> Result<()> {
     let current = git::current_branch()?;
 
     let target = bottom_target(&state, &current)?;
-    switch_to(&state, &target, &worktree_map())?;
+    switch_to(&state, &target, &worktree_map(), false)?;
     ui::success(&format!(
         "Jumped to bottom: {} → {}",
         ui::branch_display(&current, false),

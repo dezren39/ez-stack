@@ -71,19 +71,36 @@ pub fn run(
     let mut restacked_count = 0;
 
     for child in &children {
-        // Guard FIRST — before extracting old_base (avoids unused-variable warning when skipping).
-        if let Ok(Some(_wt_path)) = git::branch_checked_out_elsewhere(child, &current_root) {
-            ui::info(&format!("Skipped `{child}` (in worktree)"));
-            continue;
-        }
+        // Instead of skipping, detach worktree HEAD so rebase can proceed.
+        let worktree_path = if let Ok(Some(wt_path)) = git::branch_checked_out_elsewhere(child, &current_root) {
+            ui::info(&format!("Detaching `{child}` in worktree `{wt_path}` for rebase..."));
+            git::detach_worktree_head(&wt_path)?;
+            Some(wt_path)
+        } else {
+            None
+        };
 
         let meta = state.get_branch(child)?;
         let old_base = meta.parent_head.clone();
 
         ui::info(&format!("Restacking `{child}`..."));
         match git::rebase_onto(&new_head, &old_base, child)? {
-            git::RebaseOutcome::RebasingComplete => {}
+            git::RebaseOutcome::RebasingComplete => {
+                // Reattach worktree if we detached it.
+                if let Some(ref wt_path) = worktree_path {
+                    if !git::reattach_worktree(wt_path, child)? {
+                        ui::warn(&format!(
+                            "Could not reattach `{child}` in worktree `{wt_path}` — \
+                             worktree may have dirty files that conflict with rebased commits.\n  \
+                             Run `cd {wt_path} && git checkout {child}` to reattach manually."
+                        ));
+                    }
+                }
+            }
             git::RebaseOutcome::Conflict(conflict) => {
+                if let Some(ref wt_path) = worktree_path {
+                    let _ = git::reattach_worktree(wt_path, child);
+                }
                 // Save progress so the user can fix conflicts and continue with `ez restack`.
                 state.save()?;
                 git::checkout(&current)?;

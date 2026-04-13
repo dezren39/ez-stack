@@ -193,7 +193,7 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Down => cmd::navigate::down(),
         Commands::Top => cmd::navigate::top(),
         Commands::Bottom => cmd::navigate::bottom(),
-        Commands::Switch { name } => cmd::checkout::run(name.as_deref()),
+        Commands::Switch { name, no_cd_required } => cmd::checkout::run(name.as_deref(), no_cd_required),
         Commands::List { json } => cmd::list::run(json),
         Commands::Log { json } => cmd::log::run(json),
         Commands::Status { json } => cmd::status::run(json),

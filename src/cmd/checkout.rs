@@ -22,6 +22,7 @@ pub(crate) fn worktree_map() -> HashMap<String, String> {
     branch_worktree_map(git::worktree_list().unwrap_or_default())
 }
 
+#[cfg(test)]
 fn worktree_edit_hint(wt_path: &str) -> String {
     if wt_path.contains("/.worktrees/") {
         format!(
@@ -70,13 +71,26 @@ pub(crate) fn switch_to(
     state: &StackState,
     target: &str,
     wt_map: &HashMap<String, String>,
+    no_cd_required: bool,
 ) -> Result<()> {
     let stale_warning = stale_switch_target_warning(state, target)?;
 
     if let Some(wt_path) = wt_map.get(target) {
-        // Branch is in a worktree — print path to stdout for shell wrapper to cd.
-        ui::success(&format!("Switching to `{target}` in worktree `{wt_path}`"));
-        ui::hint(&worktree_edit_hint(wt_path));
+        if no_cd_required {
+            // Caller handles cd — just print path.
+            println!("{wt_path}");
+            return Ok(());
+        }
+        // Print path for shell wrapper to intercept.
+        // The wrapper does `cd $path`. Without the wrapper, this just prints the path.
+        ui::info(&format!(
+            "Branch `{target}` is in worktree `{wt_path}`"
+        ));
+        ui::hint(&format!(
+            "If your shell didn't change directory, run:\n  \
+             cd {wt_path}\n  \
+             Or enable auto-cd: eval \"$(ez shell-init)\""
+        ));
         println!("{wt_path}");
     } else {
         git::checkout(target)?;
@@ -91,7 +105,7 @@ pub(crate) fn switch_to(
     Ok(())
 }
 
-pub fn run(name: Option<&str>) -> Result<()> {
+pub fn run(name: Option<&str>, no_cd_required: bool) -> Result<()> {
     let state = StackState::load()?;
     let current = git::current_branch()?;
     let wt_map = worktree_map();
@@ -121,7 +135,7 @@ pub fn run(name: Option<&str>) -> Result<()> {
             return Ok(());
         }
 
-        switch_to(&state, &target, &wt_map)?;
+        switch_to(&state, &target, &wt_map, no_cd_required)?;
         return Ok(());
     }
 
@@ -174,7 +188,7 @@ pub fn run(name: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    switch_to(&state, selected, &wt_map)?;
+    switch_to(&state, selected, &wt_map, false)?;
 
     Ok(())
 }
@@ -301,5 +315,50 @@ mod tests {
             Some(&"/repo/.worktrees/feat-x".to_string())
         );
         assert!(!wt_map.contains_key("detached"));
+    }
+
+    #[test]
+    fn switch_to_no_cd_required_prints_path_and_returns() {
+        let _guard = take_env_lock();
+        let repo = init_git_repo("checkout-no-cd-required");
+        let _cwd = CwdGuard::enter(&repo);
+
+        let parent_head = git::rev_parse("main").expect("main head");
+        git::create_branch_at("feat/test", "main").expect("create branch");
+
+        let mut state = StackState::new("main".to_string());
+        state.add_branch("feat/test", "main", &parent_head, None, None);
+        state.save().expect("save state");
+
+        // Create a worktree so the branch appears in wt_map.
+        let wt_path = git::worktree_path("feat/test").expect("worktree path");
+        git::worktree_add(&wt_path, "feat/test").expect("add worktree");
+
+        let wt_map = worktree_map();
+        assert!(wt_map.contains_key("feat/test"));
+
+        // With no_cd_required=true, switch_to should return Ok without error.
+        switch_to(&state, "feat/test", &wt_map, true).expect("no_cd_required switch should succeed");
+
+        // We should still be on main (no actual checkout happened).
+        assert_eq!(git::current_branch().expect("branch"), "main");
+    }
+
+    #[test]
+    fn switch_to_trunk_with_no_cd_required_does_plain_checkout() {
+        let _guard = take_env_lock();
+        let repo = init_git_repo("checkout-trunk-no-cd");
+        let _cwd = CwdGuard::enter(&repo);
+
+        git::create_branch("temp-branch").expect("create temp");
+
+        let state = StackState::new("main".to_string());
+        state.save().expect("save state");
+
+        let wt_map = worktree_map();
+
+        // Trunk is not in wt_map as a worktree target, so no_cd_required shouldn't matter.
+        switch_to(&state, "main", &wt_map, true).expect("switch to trunk should succeed");
+        assert_eq!(git::current_branch().expect("branch"), "main");
     }
 }
