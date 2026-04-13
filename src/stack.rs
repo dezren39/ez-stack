@@ -33,6 +33,14 @@ pub struct BranchMeta {
     pub scope: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope_mode: Option<ScopeMode>,
+    /// When false, cross-repo PR repointing is disabled for this branch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repoint: Option<bool>,
+    /// Target repo for repointing after parent merge. Set by sync when a
+    /// merged parent's pr_repo differs from the child's — tells push where
+    /// to recreate the PR.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_pr_repo: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +57,9 @@ pub struct StackState {
     pub no_pr: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rerere: Option<bool>,
+    /// When false, cross-repo PR repointing is disabled globally.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repoint: Option<bool>,
     pub branches: HashMap<String, BranchMeta>,
 }
 
@@ -61,6 +72,7 @@ impl StackState {
             repo: None,
             draft: None,
             no_pr: None,
+            repoint: None,
             rerere: None,
             branches: HashMap::new(),
         }
@@ -175,6 +187,16 @@ impl StackState {
         crate::github::repo_name_from_url(&url)
     }
 
+    /// Whether cross-repo PR repointing is enabled for a branch.
+    ///
+    /// Resolution: per-branch > global > true (enabled by default).
+    pub fn effective_repoint(&self, branch: &str) -> bool {
+        self.branches
+            .get(branch)
+            .and_then(|m| m.repoint)
+            .unwrap_or_else(|| self.repoint.unwrap_or(true))
+    }
+
     pub fn meta_dir() -> Result<PathBuf> {
         Ok(git::git_common_dir()?.join("ez"))
     }
@@ -224,6 +246,8 @@ impl StackState {
                 push_remote: None,
                 scope,
                 scope_mode,
+                repoint: None,
+                target_pr_repo: None,
             },
         );
     }

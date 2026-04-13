@@ -140,7 +140,8 @@ Examples:
   ez push -am \"feat: add auth\"
   ez push -Am \"feat: add auth and new snapshots\"
    ez push --repo owner/repo
-  ez push --remote fork --repo owner/repo")]
+  ez push --remote fork --repo owner/repo
+  ez push --repoint")]
     Push {
         /// Create a draft PR
         #[arg(long, conflicts_with = "no_pr")]
@@ -198,6 +199,10 @@ Examples:
         /// Git remote to push to (overrides config), stored per-branch on first use
         #[arg(long)]
         remote: Option<String>,
+
+        /// Force close-and-recreate the PR in the correct repo (cross-fork repointing)
+        #[arg(long, conflicts_with = "no_pr")]
+        repoint: bool,
     },
 
     /// Push and create/update PRs for the entire stack
@@ -247,7 +252,8 @@ Examples:
   ez sync
   ez sync --autostash
   ez sync --dry-run
-  ez sync --force")]
+  ez sync --force
+  ez sync --submit")]
     Sync {
         /// Show what sync would do without making changes
         #[arg(long)]
@@ -260,6 +266,10 @@ Examples:
         /// Force-remove worktrees and branches even if they have uncommitted changes
         #[arg(long)]
         force: bool,
+
+        /// After sync, push and update PRs for the entire stack (equivalent to ez submit)
+        #[arg(long)]
+        submit: bool,
     },
 
     /// Fetch trunk, refresh it locally, and rebase stale branches onto their latest parent tips
@@ -1103,6 +1113,36 @@ mod tests {
                 assert_eq!(repo.as_deref(), Some("org/repo"));
             }
             _ => panic!("expected submit command"),
+        }
+    }
+
+    #[test]
+    fn parses_push_repoint_flag() {
+        let cli = Cli::try_parse_from(["ez", "push", "--repoint"])
+            .expect("parse push --repoint");
+        match cli.command {
+            Commands::Push { repoint, .. } => {
+                assert!(repoint);
+            }
+            _ => panic!("expected push command"),
+        }
+    }
+
+    #[test]
+    fn push_repoint_conflicts_with_no_pr() {
+        let result = Cli::try_parse_from(["ez", "push", "--repoint", "--no-pr"]);
+        assert!(result.is_err(), "--repoint and --no-pr should conflict");
+    }
+
+    #[test]
+    fn parses_sync_submit_flag() {
+        let cli = Cli::try_parse_from(["ez", "sync", "--submit"])
+            .expect("parse sync --submit");
+        match cli.command {
+            Commands::Sync { submit, .. } => {
+                assert!(submit);
+            }
+            _ => panic!("expected sync command"),
         }
     }
 }

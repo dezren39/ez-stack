@@ -131,6 +131,31 @@ pub fn update_pr_base_in_repo(pr_number: u64, new_base: &str, repo: Option<&str>
     Ok(())
 }
 
+/// Close an existing PR (e.g. before recreating it in a different repo).
+/// Returns Ok even if the PR is already closed.
+pub fn close_pr_in_repo(pr_number: u64, repo: Option<&str>) -> Result<()> {
+    let num = pr_number.to_string();
+    let mut args: Vec<&str> = vec!["pr", "close", &num];
+    let repo_arg: String;
+    if let Some(r) = repo {
+        repo_arg = r.to_string();
+        args.push("--repo");
+        args.push(&repo_arg);
+    }
+    match run_gh(&args) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let msg = format!("{e}");
+            // gh returns an error when the PR is already closed — treat as success.
+            if msg.contains("already closed") || msg.contains("CLOSED") || msg.contains("MERGED") {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
 pub fn get_pr_status(branch: &str) -> Result<Option<PrInfo>> {
     get_pr_status_in_repo(branch, None)
 }
@@ -301,6 +326,18 @@ pub fn repo_name_from_url(url: &str) -> Option<String> {
         Some(rest.to_string())
     } else if let Some(rest) = cleaned.strip_prefix("git@github.com:") {
         Some(rest.to_string())
+    } else {
+        None
+    }
+}
+
+/// Extract `owner/repo` from a GitHub PR URL like
+/// `https://github.com/owner/repo/pull/123`.
+pub fn repo_from_pr_url(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://github.com/")?;
+    let parts: Vec<&str> = rest.splitn(4, '/').collect();
+    if parts.len() >= 3 && parts[2] == "pull" {
+        Some(format!("{}/{}", parts[0], parts[1]))
     } else {
         None
     }
@@ -903,6 +940,25 @@ exit 0
             repo_name_from_url("https://gitlab.com/user/repo.git"),
             None
         );
+    }
+
+    #[test]
+    fn repo_from_pr_url_extracts_owner_repo() {
+        assert_eq!(
+            repo_from_pr_url("https://github.com/dezren39/ez-stack/pull/9"),
+            Some("dezren39/ez-stack".to_string())
+        );
+        assert_eq!(
+            repo_from_pr_url("https://github.com/developing-today-forks/ez-stack/pull/1"),
+            Some("developing-today-forks/ez-stack".to_string())
+        );
+    }
+
+    #[test]
+    fn repo_from_pr_url_returns_none_for_non_pr_urls() {
+        assert_eq!(repo_from_pr_url("https://github.com/user/repo"), None);
+        assert_eq!(repo_from_pr_url("https://gitlab.com/user/repo/pull/1"), None);
+        assert_eq!(repo_from_pr_url("not a url"), None);
     }
 
     #[test]

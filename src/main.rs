@@ -160,6 +160,7 @@ fn run(cli: Cli) -> Result<()> {
             message,
             repo,
             remote,
+            repoint,
         } => cmd::push::run(
             draft,
             no_draft,
@@ -174,6 +175,7 @@ fn run(cli: Cli) -> Result<()> {
             message.as_deref(),
             repo.as_deref(),
             remote.as_deref(),
+            repoint,
         ),
         Commands::Submit {
             draft,
@@ -196,7 +198,15 @@ fn run(cli: Cli) -> Result<()> {
             dry_run,
             autostash,
             force,
-        } => cmd::sync::run(dry_run, autostash, force),
+            submit,
+        } => {
+            cmd::sync::run(dry_run, autostash, force)?;
+            if submit && !dry_run {
+                ui::header("Submitting stack...");
+                cmd::submit::run(false, false, None, None, None, None, None)?;
+            }
+            Ok(())
+        }
         Commands::Restack { force } => cmd::restack::run(force),
         Commands::Up => cmd::navigate::up(),
         Commands::Down => cmd::navigate::down(),

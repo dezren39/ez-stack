@@ -243,6 +243,8 @@ mod tests {
                 push_remote: None,
                 scope: None,
                 scope_mode: None,
+                repoint: None,
+                target_pr_repo: None,
             },
         );
         StackState {
@@ -253,6 +255,7 @@ mod tests {
             draft: None,
             no_pr: None,
             rerere: None,
+            repoint: None,
             branches,
         }
     }

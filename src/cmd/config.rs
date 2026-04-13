@@ -18,6 +18,7 @@ const KNOWN_KEYS: &[(&str, &str)] = &[
     ("draft", "Default new PRs to draft (true/false)"),
     ("no_pr", "Default push to skip PR creation (true/false)"),
     ("rerere", "Enable git rerere for conflict recording (true/false)"),
+    ("repoint", "Enable cross-repo PR repointing on sync/push (true/false, default true)"),
 ];
 
 /// Known branch attribute keys.
@@ -29,10 +30,11 @@ const BRANCH_KEYS: &[(&str, &str)] = &[
     ("parent", "Parent branch in the stack"),
     ("scope", "File scope patterns (comma-separated)"),
     ("scope_mode", "Scope enforcement mode (warn/strict)"),
+    ("repoint", "Enable cross-repo PR repointing for this branch (true/false, default true)"),
 ];
 
 /// Global keys that accept only boolean values.
-const BOOL_KEYS: &[&str] = &["draft", "no_pr", "rerere"];
+const BOOL_KEYS: &[&str] = &["draft", "no_pr", "rerere", "repoint"];
 
 fn is_known_global_key(key: &str) -> bool {
     KNOWN_KEYS.iter().any(|(k, _)| *k == key)
@@ -347,6 +349,7 @@ fn get_global_value(state: &StackState, key: &str) -> Option<String> {
         "draft" => state.draft.map(|v| v.to_string()),
         "no_pr" => state.no_pr.map(|v| v.to_string()),
         "rerere" => state.rerere.map(|v| v.to_string()),
+        "repoint" => state.repoint.map(|v| v.to_string()),
         _ => None,
     }
 }
@@ -382,6 +385,9 @@ fn set_global_value(state: &mut StackState, key: &str, value: &str) -> Result<()
                 enable_rerere();
             }
         }
+        "repoint" => {
+            state.repoint = Some(parse_bool(value)?);
+        }
         _ => {
             bail!(EzError::UserMessage(format!("unknown config key `{key}`")));
         }
@@ -411,6 +417,7 @@ fn get_branch_value(meta: &crate::stack::BranchMeta, key: &str) -> Option<String
             crate::stack::ScopeMode::Warn => "warn".to_string(),
             crate::stack::ScopeMode::Strict => "strict".to_string(),
         }),
+        "repoint" => meta.repoint.map(|v| v.to_string()),
         // Also allow reading per-branch `remote` as alias for push_remote
         "remote" => meta.push_remote.clone(),
         _ => None,
@@ -479,6 +486,9 @@ fn set_branch_value(
                 ))),
             };
             state.get_branch_mut(branch)?.scope_mode = Some(mode);
+        }
+        "repoint" => {
+            state.get_branch_mut(branch)?.repoint = Some(parse_bool(value)?);
         }
         _ => {
             bail!(EzError::UserMessage(format!(
