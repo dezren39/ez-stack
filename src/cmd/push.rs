@@ -268,15 +268,16 @@ pub fn push_or_update_pr(
                 .or_else(|| state.effective_pr_repo(parent))
                 .or_else(|| effective_repo.clone())
         };
-        let needs_repoint = force_repoint || {
-            match (&pr_current_repo, &target_repo) {
-                (Some(current), Some(target)) => current != target,
-                // Only repoint when we have an explicit target. If target is
-                // unknown (None), there is no mismatch to act on.
-                _ => false,
-            }
+        let needs_repoint = match (&pr_current_repo, &target_repo) {
+            (Some(current), Some(target)) => current != target,
+            // Only repoint when we have an explicit target. If target is
+            // unknown (None), there is no mismatch to act on.
+            _ => false,
         };
-        let repoint_enabled = state.effective_repoint(branch);
+        // --repoint overrides repoint=false config (it's the escape hatch),
+        // but does NOT force repoint when repos already match — that would
+        // just churn a PR number for no reason.
+        let repoint_enabled = force_repoint || state.effective_repoint(branch);
         if needs_repoint && repoint_enabled {
             let old_number = pr.number;
             let old_url = pr.url.clone();
@@ -1021,25 +1022,49 @@ mod tests {
 
     #[test]
     fn repoint_triggered_by_force_flag() {
-        // force_repoint=true should always trigger, regardless of repo match
+        // --repoint overrides repoint=false config when repos actually differ.
+        // It does NOT force repoint when repos match (that would be pointless).
         let mut state = StackState::new("main".to_string());
         state.add_branch("feat/a", "main", "aaa", None, None);
-        state.get_branch_mut("feat/a").unwrap().pr_repo = Some("same/repo".to_string());
-        state.repo = Some("same/repo".to_string());
+        state.get_branch_mut("feat/a").unwrap().pr_repo = Some("fork/repo".to_string());
+        state.get_branch_mut("feat/a").unwrap().repoint = Some(false);
+        state.repo = Some("upstream/repo".to_string());
 
-        let pr_current_repo = Some("same/repo".to_string());
-        let target_repo = Some("same/repo".to_string());
+        let pr_current_repo = Some("fork/repo".to_string());
+        let target_repo = Some("upstream/repo".to_string());
         let force_repoint = true;
 
-        let needs_repoint = force_repoint || {
-            match (&pr_current_repo, &target_repo) {
-                (Some(current), Some(target)) => current != target,
-                _ => false,
-            }
+        let needs_repoint = match (&pr_current_repo, &target_repo) {
+            (Some(current), Some(target)) => current != target,
+            _ => false,
+        };
+        let repoint_enabled = force_repoint || state.effective_repoint("feat/a");
+
+        assert!(needs_repoint, "repos differ → mismatch detected");
+        assert!(
+            repoint_enabled,
+            "--repoint should override repoint=false config"
+        );
+        // Without --repoint, config would block it
+        assert!(
+            !state.effective_repoint("feat/a"),
+            "config alone says repoint=false"
+        );
+    }
+
+    #[test]
+    fn force_repoint_does_not_trigger_when_repos_match() {
+        // --repoint should NOT close+recreate in the same repo — that's pointless churn
+        let pr_current_repo = Some("same/repo".to_string());
+        let target_repo = Some("same/repo".to_string());
+
+        let needs_repoint = match (&pr_current_repo, &target_repo) {
+            (Some(current), Some(target)) => current != target,
+            _ => false,
         };
         assert!(
-            needs_repoint,
-            "force_repoint should override repo match check"
+            !needs_repoint,
+            "--repoint with matching repos should not trigger repoint"
         );
     }
 
