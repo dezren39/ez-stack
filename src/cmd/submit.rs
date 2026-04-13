@@ -107,7 +107,30 @@ pub fn run(
             false, // force_repoint: submit auto-detects repoint needs
         )?;
 
+        // --no-draft: undraft existing draft PRs across the stack.
         let pr_number = state.get_branch(branch).ok().and_then(|m| m.pr_number);
+        if no_draft {
+            if let Some(num) = pr_number {
+                let effective_repo = state.effective_pr_repo(branch);
+                // Check if the PR is currently a draft.
+                if let Ok(Some(pr_info)) =
+                    github::get_pr_status_in_repo(branch, effective_repo.as_deref())
+                {
+                    if pr_info.is_draft {
+                        match github::set_pr_ready_in_repo(
+                            num,
+                            true,
+                            effective_repo.as_deref(),
+                        ) {
+                            Ok(()) => ui::info(&format!("Marked PR #{num} as ready")),
+                            Err(e) => ui::warn(&format!(
+                                "Could not undraft PR #{num}: {e}"
+                            )),
+                        }
+                    }
+                }
+            }
+        }
         ui::receipt(&serde_json::json!({
             "cmd": "submit",
             "branch": branch,
