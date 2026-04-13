@@ -244,6 +244,7 @@ mod tests {
                 scope: None,
                 scope_mode: None,
                 repoint: None,
+                target_pr_repo: None,
             },
         );
         StackState {

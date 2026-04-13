@@ -231,18 +231,25 @@ pub fn push_or_update_pr(
 
     // Detect cross-repo repoint: if the target repo for the new PR differs from
     // where the existing PR lives, close the old and create in the new repo.
-    // Target repo: --repo override > parent's effective repo.
+    // Target repo: --repo override > branch's target_pr_repo (set by sync) > parent's effective repo.
     let (existing_pr, effective_repo, did_repoint) = if let Some(ref pr) = existing_pr {
         let pr_current_repo = lookup_repo.clone();
+        let target_pr_repo_hint = state
+            .get_branch(branch)
+            .ok()
+            .and_then(|m| m.target_pr_repo.clone());
         let target_repo = if resolved_override.is_some() {
             resolved_override.clone()
         } else {
-            state.effective_pr_repo(parent).or_else(|| effective_repo.clone())
+            target_pr_repo_hint
+                .or_else(|| state.effective_pr_repo(parent))
+                .or_else(|| effective_repo.clone())
         };
         let needs_repoint = force_repoint || {
             match (&pr_current_repo, &target_repo) {
                 (Some(current), Some(target)) => current != target,
-                (Some(_), None) => own_pr_repo.is_some(),
+                // Only repoint when we have an explicit target. If target is
+                // unknown (None), there is no mismatch to act on.
                 _ => false,
             }
         };
@@ -458,6 +465,10 @@ pub fn push_or_update_pr(
             };
             if let Some(ref r) = actual_repo {
                 state.get_branch_mut(branch)?.pr_repo = Some(r.clone());
+            }
+            // Clear the repoint hint — the PR now lives where it should.
+            if did_repoint {
+                state.get_branch_mut(branch)?.target_pr_repo = None;
             }
 
             // Now rebuild the tree with the PR number and update the body.

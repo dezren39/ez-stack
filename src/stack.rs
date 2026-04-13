@@ -36,6 +36,11 @@ pub struct BranchMeta {
     /// When false, cross-repo PR repointing is disabled for this branch.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repoint: Option<bool>,
+    /// Target repo for repointing after parent merge. Set by sync when a
+    /// merged parent's pr_repo differs from the child's — tells push where
+    /// to recreate the PR.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_pr_repo: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -242,6 +247,7 @@ impl StackState {
                 scope,
                 scope_mode,
                 repoint: None,
+                target_pr_repo: None,
             },
         );
     }
