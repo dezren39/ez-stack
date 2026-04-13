@@ -204,66 +204,75 @@ pub fn push_or_update_pr(
     // Normalize repo shorthand (e.g. "fork" → "owner/repo" from remote URL).
     let resolved_override: Option<String> =
         repo_override.map(|s| github::resolve_repo_shorthand(s));
+    // The stored/inherited repo for this branch (before any CLI override).
+    let stored_repo: Option<String> = state.effective_pr_repo(branch);
     // Resolve effective repo: CLI flag > stored per-branch > global config > None
     let effective_repo: Option<String> = resolved_override
         .clone()
-        .or_else(|| state.effective_pr_repo(branch));
+        .or_else(|| stored_repo.clone());
 
     // Resolve the push remote for cross-fork head prefix.
     let push_remote = state.effective_push_remote(branch);
 
-    let existing_pr = github::get_pr_status_in_repo(branch, effective_repo.as_deref())?;
+    // Always look up the existing PR in the STORED repo (where it actually lives),
+    // not the override repo. This ensures repoint detection works both with --repoint
+    // --repo <new> and with auto-detection when parent chain repo changed.
+    let lookup_repo = stored_repo.clone();
+    let existing_pr = github::get_pr_status_in_repo(branch, lookup_repo.as_deref())?;
 
-    // Detect cross-repo repoint: if the parent's PR lives in a different repo than
-    // the current branch's PR, we need to close the old PR and create a new one.
-    // This happens when sync reparents children after a bottom-of-chain merge and
-    // the parent chain now targets a different repo.
-    let (existing_pr, effective_repo) = if let Some(ref pr) = existing_pr {
-        let parent_repo = state.effective_pr_repo(parent);
+    // Detect cross-repo repoint: if the target repo for the new PR differs from
+    // where the existing PR lives, close the old and create in the new repo.
+    // Target repo: --repo override > parent's effective repo.
+    let (existing_pr, effective_repo, did_repoint) = if let Some(ref pr) = existing_pr {
+        let pr_current_repo = lookup_repo.clone();
+        let target_repo = if resolved_override.is_some() {
+            effective_repo.clone()
+        } else {
+            state.effective_pr_repo(parent).or_else(|| effective_repo.clone())
+        };
         let needs_repoint = force_repoint || {
-            // Compare normalized repos: if both are Some but different, repoint needed.
-            match (&effective_repo, &parent_repo) {
+            match (&pr_current_repo, &target_repo) {
                 (Some(current), Some(target)) => current != target,
-                // PR currently in an explicit repo but parent targets the default repo
-                // (None means "use gh default") — this is a mismatch if branch has pr_repo.
                 (Some(_), None) => state.get_branch(branch).ok().and_then(|m| m.pr_repo.as_ref()).is_some(),
                 _ => false,
             }
         };
-        let no_repoint = state.effective_no_repoint(branch);
-        if needs_repoint && !no_repoint {
+        let repoint_enabled = state.effective_repoint(branch);
+        if needs_repoint && repoint_enabled {
             let old_number = pr.number;
-            let old_repo = effective_repo.clone();
-            let old_url = &pr.url;
+            let old_url = pr.url.clone();
             ui::info(&format!(
                 "Repointing PR #{old_number} — closing in {} and recreating in {}",
-                old_repo.as_deref().unwrap_or("default repo"),
-                parent_repo.as_deref().unwrap_or("default repo"),
+                pr_current_repo.as_deref().unwrap_or("default repo"),
+                target_repo.as_deref().unwrap_or("default repo"),
             ));
-            if let Err(e) = github::close_pr_in_repo(old_number, old_repo.as_deref()) {
+            // Attempt the close, but DON'T mutate state yet — if create fails
+            // we want the old PR info intact for recovery.
+            if let Err(e) = github::close_pr_in_repo(old_number, pr_current_repo.as_deref()) {
                 ui::warn(&format!(
                     "Could not close old PR #{old_number} ({old_url}): {e}\n  \
                      Hint: close it manually and re-run `ez push`"
                 ));
+                // Close failed — fall through to normal update path on the old PR.
+                (existing_pr, effective_repo, false)
+            } else {
+                // Close succeeded — fall through to create path with the target repo.
+                // State is NOT mutated here; the create path will set pr_number/pr_repo
+                // on success. We just pass None so the match hits the create arm.
+                (None, target_repo, true)
             }
-            // Clear stored pr_number and pr_repo so we create fresh.
-            let meta = state.get_branch_mut(branch)?;
-            meta.pr_number = None;
-            meta.pr_repo = None;
-            // Fall through to the None (create) path with the parent's repo.
-            (None, parent_repo)
-        } else if needs_repoint && no_repoint {
+        } else if needs_repoint && !repoint_enabled {
             let old_number = pr.number;
             ui::warn(&format!(
                 "PR #{old_number} for `{branch}` targets a different repo than parent `{parent}` — \
-                 skipped repoint (no_repoint is set). Update manually or use `ez push --repoint`."
+                 skipped repoint (repoint is disabled). Update manually or use `ez push --repoint`."
             ));
-            (existing_pr, effective_repo)
+            (existing_pr, effective_repo, false)
         } else {
-            (existing_pr, effective_repo)
+            (existing_pr, effective_repo, false)
         }
     } else {
-        (existing_pr, effective_repo)
+        (existing_pr, effective_repo, false)
     };
 
     let pr_url = match existing_pr {
@@ -425,9 +434,12 @@ pub fn push_or_update_pr(
                 effective_repo.as_deref(),
             )?;
             state.get_branch_mut(branch)?.pr_number = Some(pr.number);
-            // Only persist pr_repo when --repo was explicitly passed on the CLI.
-            if let Some(ref r) = resolved_override {
-                state.get_branch_mut(branch)?.pr_repo = Some(r.clone());
+            // Persist pr_repo when --repo was explicitly passed OR when we just
+            // repointed (the effective_repo changed, must record the new target).
+            if did_repoint || resolved_override.is_some() {
+                if let Some(ref r) = effective_repo {
+                    state.get_branch_mut(branch)?.pr_repo = Some(r.clone());
+                }
             }
 
             // Now rebuild the tree with the PR number and update the body.
@@ -831,14 +843,14 @@ mod tests {
     }
 
     #[test]
-    fn no_repoint_config_suppresses_repoint() {
-        // Even when repos differ, no_repoint should suppress
+    fn repoint_config_false_suppresses_repoint() {
+        // Even when repos differ, repoint=false should suppress
         let mut state = StackState::new("main".to_string());
         state.add_branch("feat/a", "main", "aaa", None, None);
         state.get_branch_mut("feat/a").unwrap().pr_repo = Some("upstream/repo".to_string());
-        state.get_branch_mut("feat/a").unwrap().no_repoint = Some(true);
+        state.get_branch_mut("feat/a").unwrap().repoint = Some(false);
         state.repo = Some("fork/repo".to_string());
 
-        assert!(state.effective_no_repoint("feat/a"), "should be suppressed");
+        assert!(!state.effective_repoint("feat/a"), "repoint=false should suppress");
     }
 }

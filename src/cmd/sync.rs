@@ -398,13 +398,13 @@ fn run_sync_inner(force: bool) -> Result<()> {
 
             let _ = state.reparent_children_preserving_parent_head(branch_name, &parent_name)?;
 
-            // Update child PR bases after reparenting (cross-fork-aware, no_repoint-guarded).
+            // Update child PR bases after reparenting (cross-fork-aware, repoint-guarded).
             for child in &direct_children {
                 let child_pr = state.get_branch(child).ok().and_then(|m| m.pr_number);
                 let Some(child_pr_number) = child_pr else { continue };
-                if state.effective_no_repoint(child) {
+                if !state.effective_repoint(child) {
                     ui::warn(&format!(
-                        "Skipped PR base update for `{child}` (no_repoint is set) \u{2014} update PR #{child_pr_number} manually"
+                        "Skipped PR base update for `{child}` (repoint is disabled) \u{2014} update PR #{child_pr_number} manually"
                     ));
                     continue;
                 }

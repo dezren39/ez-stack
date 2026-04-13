@@ -132,6 +132,7 @@ pub fn update_pr_base_in_repo(pr_number: u64, new_base: &str, repo: Option<&str>
 }
 
 /// Close an existing PR (e.g. before recreating it in a different repo).
+/// Returns Ok even if the PR is already closed.
 pub fn close_pr_in_repo(pr_number: u64, repo: Option<&str>) -> Result<()> {
     let num = pr_number.to_string();
     let mut args: Vec<&str> = vec!["pr", "close", &num];
@@ -141,8 +142,18 @@ pub fn close_pr_in_repo(pr_number: u64, repo: Option<&str>) -> Result<()> {
         args.push("--repo");
         args.push(&repo_arg);
     }
-    run_gh(&args)?;
-    Ok(())
+    match run_gh(&args) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let msg = format!("{e}");
+            // gh returns an error when the PR is already closed — treat as success.
+            if msg.contains("already closed") || msg.contains("CLOSED") || msg.contains("MERGED") {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        }
+    }
 }
 
 pub fn get_pr_status(branch: &str) -> Result<Option<PrInfo>> {
