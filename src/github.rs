@@ -544,6 +544,21 @@ pub fn cross_fork_head(branch: &str, push_remote: &str, pr_repo: Option<&str>) -
     }
 }
 
+/// Fetch title of an issue or PR from GitHub.
+///
+/// Uses the issues API which returns both issues and PRs.
+/// Returns `None` on any failure (not found, network error, etc.).
+pub fn resolve_issue_or_pr(repo: &str, number: u64) -> Option<String> {
+    let route = format!("repos/{repo}/issues/{number}");
+    let output = run_gh(&["api", &route, "--jq", ".title"]).ok()?;
+    let title = output.trim().to_string();
+    if title.is_empty() {
+        None
+    } else {
+        Some(title)
+    }
+}
+
 /// Merge a PR via the GitHub REST API.
 pub fn merge_pr(pr_number: u64, method: &str) -> Result<()> {
     merge_pr_in_repo(pr_number, method, None)
