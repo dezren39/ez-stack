@@ -33,6 +33,9 @@ pub struct BranchMeta {
     pub scope: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope_mode: Option<ScopeMode>,
+    /// When true, cross-repo PR repointing is blocked for this branch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_repoint: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +52,9 @@ pub struct StackState {
     pub no_pr: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rerere: Option<bool>,
+    /// When true, cross-repo PR repointing is blocked globally.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_repoint: Option<bool>,
     pub branches: HashMap<String, BranchMeta>,
 }
 
@@ -61,6 +67,7 @@ impl StackState {
             repo: None,
             draft: None,
             no_pr: None,
+            no_repoint: None,
             rerere: None,
             branches: HashMap::new(),
         }
@@ -175,6 +182,16 @@ impl StackState {
         crate::github::repo_name_from_url(&url)
     }
 
+    /// Whether cross-repo PR repointing is blocked for a branch.
+    ///
+    /// Resolution: per-branch > global > false.
+    pub fn effective_no_repoint(&self, branch: &str) -> bool {
+        self.branches
+            .get(branch)
+            .and_then(|m| m.no_repoint)
+            .unwrap_or_else(|| self.no_repoint.unwrap_or(false))
+    }
+
     pub fn meta_dir() -> Result<PathBuf> {
         Ok(git::git_common_dir()?.join("ez"))
     }
@@ -224,6 +241,7 @@ impl StackState {
                 push_remote: None,
                 scope,
                 scope_mode,
+                no_repoint: None,
             },
         );
     }

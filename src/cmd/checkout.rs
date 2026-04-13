@@ -214,6 +214,7 @@ mod tests {
                 push_remote: None,
                 scope: None,
                 scope_mode: None,
+                no_repoint: None,
             },
         );
         StackState {
@@ -224,6 +225,7 @@ mod tests {
             draft: None,
             no_pr: None,
             rerere: None,
+            no_repoint: None,
             branches,
         }
     }
