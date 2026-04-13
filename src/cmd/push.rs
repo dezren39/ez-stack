@@ -204,20 +204,29 @@ pub fn push_or_update_pr(
     // Normalize repo shorthand (e.g. "fork" → "owner/repo" from remote URL).
     let resolved_override: Option<String> =
         repo_override.map(|s| github::resolve_repo_shorthand(s));
-    // The stored/inherited repo for this branch (before any CLI override).
-    let stored_repo: Option<String> = state.effective_pr_repo(branch);
-    // Resolve effective repo: CLI flag > stored per-branch > global config > None
+    // The branch's own stored pr_repo (NOT inherited from parent).
+    // This is where the branch's PR actually lives, if it has one.
+    let own_pr_repo: Option<String> = state
+        .get_branch(branch)
+        .ok()
+        .and_then(|m| m.pr_repo.clone());
+    // The full effective repo (walks parent chain + config fallback).
+    // Used for new PR creation when no override is given.
+    let inherited_repo: Option<String> = state.effective_pr_repo(branch);
+    // Resolve effective repo: CLI flag > branch's own > inherited > None
     let effective_repo: Option<String> = resolved_override
         .clone()
-        .or_else(|| stored_repo.clone());
+        .or_else(|| own_pr_repo.clone())
+        .or_else(|| inherited_repo.clone());
 
     // Resolve the push remote for cross-fork head prefix.
     let push_remote = state.effective_push_remote(branch);
 
-    // Always look up the existing PR in the STORED repo (where it actually lives),
-    // not the override repo. This ensures repoint detection works both with --repoint
-    // --repo <new> and with auto-detection when parent chain repo changed.
-    let lookup_repo = stored_repo.clone();
+    // Look up existing PR in the branch's OWN stored repo (where it was actually
+    // created), not the inherited/override repo. If the branch has no own pr_repo,
+    // look in the default gh repo (None). This prevents false lookups in the
+    // parent's repo where the PR doesn't exist.
+    let lookup_repo = own_pr_repo.clone();
     let existing_pr = github::get_pr_status_in_repo(branch, lookup_repo.as_deref())?;
 
     // Detect cross-repo repoint: if the target repo for the new PR differs from
@@ -226,14 +235,14 @@ pub fn push_or_update_pr(
     let (existing_pr, effective_repo, did_repoint) = if let Some(ref pr) = existing_pr {
         let pr_current_repo = lookup_repo.clone();
         let target_repo = if resolved_override.is_some() {
-            effective_repo.clone()
+            resolved_override.clone()
         } else {
             state.effective_pr_repo(parent).or_else(|| effective_repo.clone())
         };
         let needs_repoint = force_repoint || {
             match (&pr_current_repo, &target_repo) {
                 (Some(current), Some(target)) => current != target,
-                (Some(_), None) => state.get_branch(branch).ok().and_then(|m| m.pr_repo.as_ref()).is_some(),
+                (Some(_), None) => own_pr_repo.is_some(),
                 _ => false,
             }
         };
@@ -272,7 +281,13 @@ pub fn push_or_update_pr(
             (existing_pr, effective_repo, false)
         }
     } else {
-        (existing_pr, effective_repo, false)
+        // No existing PR — this is a fresh create.
+        // For fresh creates, only use CLI override or branch's own stored repo.
+        // Do NOT inherit from parent — the child should create at its default
+        // repo, and repoint only happens later when push detects the mismatch
+        // between where the PR lives and where the parent chain targets.
+        let create_repo = resolved_override.clone().or_else(|| own_pr_repo.clone());
+        (existing_pr, create_repo, false)
     };
 
     let pr_url = match existing_pr {
