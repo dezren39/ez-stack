@@ -131,6 +131,11 @@ fn build_subtree(state: &StackState, branch: &str, current_branch: &str) -> Stac
 
 /// Compute the full PR URL for a branch using metadata.
 fn pr_url_for_branch(state: &StackState, branch: &str) -> Option<String> {
+    pr_url_for_branch_pub(state, branch)
+}
+
+/// Public version of `pr_url_for_branch` for use by other modules.
+pub fn pr_url_for_branch_pub(state: &StackState, branch: &str) -> Option<String> {
     let meta = state.branches.get(branch)?;
     let pr_number = meta.pr_number?;
     // Use the branch's effective PR repo to construct the URL.

@@ -119,6 +119,9 @@ pub fn run(
 
     state.save()?;
 
+    // Update stack sections on all contiguous PRs.
+    crate::cmd::push::update_contiguous_stack_bodies(&state, &current);
+
     // Print summary.
     ui::success(&format!("Submitted {} PR(s):", pr_urls.len()));
     for (branch, url) in &pr_urls {
