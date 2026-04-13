@@ -198,8 +198,29 @@ fn run_sync_inner(force: bool) -> Result<()> {
     let has_any_prs = !cleanup_candidates.is_empty();
     let pr_statuses = if has_any_prs {
         let sp = ui::spinner("Checking PR states...");
+        // Collect all unique repos to query: global repo + per-branch pr_repo values.
+        let mut repos_to_query: Vec<Option<String>> = Vec::new();
         let bulk_repo = state.repo.clone().filter(|s| !s.is_empty());
-        let statuses = github::get_all_pr_statuses_in_repo(bulk_repo.as_deref());
+        repos_to_query.push(bulk_repo);
+        let mut seen_repos = std::collections::HashSet::new();
+        for meta in state.branches.values() {
+            if let Some(ref repo) = meta.pr_repo {
+                if !repo.is_empty() && seen_repos.insert(repo.clone()) {
+                    repos_to_query.push(Some(repo.clone()));
+                }
+            }
+        }
+        // Also add None (default repo from gh) if we haven't queried it.
+        if repos_to_query.is_empty() {
+            repos_to_query.push(None);
+        }
+        let mut statuses = std::collections::HashMap::new();
+        for repo in repos_to_query {
+            let page = github::get_all_pr_statuses_in_repo(repo.as_deref());
+            for (branch, info) in page {
+                statuses.entry(branch).or_insert(info);
+            }
+        }
         sp.finish_and_clear();
         statuses
     } else {
@@ -359,7 +380,49 @@ fn run_sync_inner(force: bool) -> Result<()> {
 
         if is_managed {
             let parent_name = parent.clone().expect("managed branch should have a parent");
+
+            // Propagate repo metadata to direct children BEFORE removing the branch,
+            // so children don't lose their effective_pr_repo resolution chain.
+            let direct_children = state.children_of(branch_name);
+            let merged_pr_repo = state.effective_pr_repo(branch_name);
+            let merged_push_remote = Some(state.effective_push_remote(branch_name));
+            for child in &direct_children {
+                let child_meta = state.get_branch_mut(child)?;
+                if child_meta.pr_repo.is_none() {
+                    child_meta.pr_repo = merged_pr_repo.clone();
+                }
+                if child_meta.push_remote.is_none() {
+                    child_meta.push_remote = merged_push_remote.clone();
+                }
+            }
+
             let _ = state.reparent_children_preserving_parent_head(branch_name, &parent_name)?;
+
+            // Update child PR bases after reparenting (cross-fork-aware, no_repoint-guarded).
+            for child in &direct_children {
+                let child_pr = state.get_branch(child).ok().and_then(|m| m.pr_number);
+                let Some(child_pr_number) = child_pr else { continue };
+                if state.effective_no_repoint(child) {
+                    ui::warn(&format!(
+                        "Skipped PR base update for `{child}` (no_repoint is set) \u{2014} update PR #{child_pr_number} manually"
+                    ));
+                    continue;
+                }
+                let child_repo = state.effective_pr_repo(child);
+                if let Err(e) = github::update_pr_base_in_repo(
+                    child_pr_number,
+                    &parent_name,
+                    child_repo.as_deref(),
+                ) {
+                    ui::warn(&format!(
+                        "Could not update PR #{child_pr_number} base for `{child}` to `{parent_name}`: {e}"
+                    ));
+                } else {
+                    ui::info(&format!(
+                        "Updated PR #{child_pr_number} base for `{child}` to `{parent_name}`"
+                    ));
+                }
+            }
 
             state.remove_branch(branch_name);
         }
