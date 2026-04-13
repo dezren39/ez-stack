@@ -175,15 +175,6 @@ impl StackState {
         crate::github::repo_name_from_url(&url)
     }
 
-    /// Resolve the effective global remote (state.remote with fallback to git default).
-    pub fn effective_remote(&self) -> String {
-        if !self.remote.is_empty() && git::remote_exists(&self.remote) {
-            self.remote.clone()
-        } else {
-            git::default_remote()
-        }
-    }
-
     pub fn meta_dir() -> Result<PathBuf> {
         Ok(git::git_common_dir()?.join("ez"))
     }
