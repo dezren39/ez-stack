@@ -36,26 +36,70 @@ Use `git add -p` only when you need hunk-level selection before `ez commit`.
 
 ## Agent Startup
 
-```bash
-# 1. Check what's happening
-ez list
-
-# 2. Create your isolated workspace (always use --from main for independent work)
-cd $(ez create my-task --from main)
-
-# 3. You're in .worktrees/my-task with your own branch. Work here.
-```
-
-After any `ez create`, `ez switch`, `ez checkout`, `ez delete`, or `ez sync` that may change directories, immediately re-anchor file operations to the active worktree root:
+### 0. Check `ez` is available (once per session)
 
 ```bash
-pwd
-git rev-parse --show-toplevel
+command -v ez >/dev/null 2>&1 || { echo "ez not in PATH — using git directly"; }
 ```
 
-Use that path, not the main repo checkout, for every subsequent read or write. Never reuse an absolute file path captured before switching into a linked worktree.
+If `ez` is not found, **stop here**. Do not reference `ez` again for the rest of the session. Fall back to normal `git`/`gh` workflows as you would without `ez`. Only retry if the user explicitly asks you to install or use `ez`.
 
-**Always use `--from main`** for independent tasks. Without it, ez stacks on the current branch.
+### 1. Check the shell hook (once per session)
+
+The shell hook makes `ez create`, `ez delete`, `ez switch`, etc. auto-cd into the right worktree. Check it first:
+
+```bash
+# Is the shell hook loaded? (look for "function" in the output)
+type ez 2>&1 | grep -q function || eval "$(ez shell-init 2>/dev/null)"
+```
+
+That one line checks if `ez` is a shell function. If not, it evals the hook inline. If `eval` fails (e.g. some bash versions), the fallback is to wrap create/delete with `cd $()` — see below.
+
+### 2. Create your workspace
+
+**With shell hook** (preferred — auto-cds after create):
+```bash
+ez create my-task                    # creates worktree + branch, shell hook cds into it
+```
+
+**Without shell hook** (fallback — manual cd):
+```bash
+cd "$(command ez create my-task)"    # capture worktree path from stdout, cd into it
+```
+
+### 3. Verify you landed correctly (one line)
+
+Always confirm after create — the branch name and worktree path must match:
+
+```bash
+# Verify: exit 0, correct branch, inside worktree
+[[ "$(git branch --show-current)" == "my-task" ]] && [[ "$(pwd)" == *".worktrees/"* ]] || { echo "ERROR: not in expected worktree"; exit 1; }
+```
+
+### Putting it together (copy-paste ready)
+
+Typical agent startup — check availability, load hook, create, verify:
+
+```bash
+command -v ez >/dev/null 2>&1 || { echo "ez not in PATH — using git directly"; return 1; }
+type ez 2>&1 | grep -q function || eval "$(ez shell-init 2>/dev/null)"
+ez create my-task
+[[ "$(git branch --show-current)" == "my-task" ]] && [[ "$(pwd)" == *".worktrees/"* ]] || cd "$(git rev-parse --show-toplevel)/../.worktrees/my-task" 2>/dev/null || { echo "ERROR: worktree not found"; exit 1; }
+# You're in .worktrees/my-task on branch my-task. Work here.
+```
+
+If the shell hook isn't available and can't be evaled, use the explicit fallback:
+
+```bash
+cd "$(command ez create my-task)" || { echo "ERROR: create failed"; exit 1; }
+[[ "$(git branch --show-current)" == "my-task" ]] || { echo "ERROR: wrong branch"; exit 1; }
+```
+
+### Notes
+
+After any `ez create`, `ez switch`, `ez checkout`, `ez delete`, or `ez sync` that may change directories, always verify `pwd` and `git branch --show-current`. Never reuse absolute file paths captured before a directory-changing command.
+
+**Stacking from main:** Run `ez create my-task` while on `main` (or any managed branch) to stack on it. Without `--from`, ez stacks on the current branch — which is usually what you want. Use `--from main` only when creating a branch without a worktree (e.g. `ez create my-task --from main --no-worktree`).
 
 **Hooks:** If `.ez/hooks/post-create/default.md` exists in the repo, ez prints its instructions after worktree creation. Follow them to set up the worktree (install deps, copy env, etc.). Use `--hook <name>` for a specific hook: `ez create feat/auth --hook setup-node` reads `.ez/hooks/post-create/setup-node.md`.
 
@@ -117,13 +161,14 @@ ez sync --autostash   # pulls trunk, cleans merged PRs, restacks your branches
 
 ### Finish
 ```bash
-cd $(ez delete my-task --yes)   # removes worktree + branch, stops the branch dev server, cd's to repo root
+ez delete my-task --yes          # shell hook cds back to repo root
+# fallback without hook: cd "$(command ez delete my-task --yes)"
 ```
 
 ## Multi-Agent Rules
 
 - **One worktree per agent.** Never share a worktree.
-- **Always `--from main`** for independent tasks.
+- **Create from main** by running `ez create` while on `main` for independent tasks.
 - **Sync before push** to pick up other agents' merged work.
 - **Preferred commit flow:** `ez commit -m "msg" -- path1 path2`
 - **Bulk tracked update:** `ez commit -am "msg"`

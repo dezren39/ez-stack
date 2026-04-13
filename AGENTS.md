@@ -76,8 +76,16 @@ Discovery: `ez` (no args) lists all commands (exit 0). `ez <command> --help` sho
 # Check whether the repo is managed by ez
 test -f .git/ez/stack.json && echo "ez-managed"
 
-# Create from a specific base branch
+# Create from a specific base branch (no worktree — use for non-worktree stacking)
 ez create feat/my-change --from main
+
+# Create with worktree (preferred for agents — auto-cds with shell hook)
+type ez 2>&1 | grep -q function || eval "$(ez shell-init 2>/dev/null)"
+ez create feat/my-change
+[[ "$(git branch --show-current)" == "feat/my-change" ]] || { echo "ERROR: not on expected branch"; exit 1; }
+
+# Fallback without shell hook
+cd "$(command ez create feat/my-change)" || { echo "ERROR: create failed"; exit 1; }
 
 # Preferred: stage specific files and commit in one step
 ez commit -m "fix: update parser" -- src/parser.rs
