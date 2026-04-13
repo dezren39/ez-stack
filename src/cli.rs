@@ -139,7 +139,8 @@ Examples:
   ez push --stack
   ez push -am \"feat: add auth\"
   ez push -Am \"feat: add auth and new snapshots\"
-  ez push --repo owner/repo")]
+   ez push --repo owner/repo
+  ez push --remote fork --repo owner/repo")]
     Push {
         /// Create a draft PR
         #[arg(long, conflicts_with = "no_pr")]
@@ -193,6 +194,10 @@ Examples:
         /// Target repository for PR creation (owner/repo), overrides config
         #[arg(long)]
         repo: Option<String>,
+
+        /// Git remote to push to (overrides config), stored per-branch on first use
+        #[arg(long)]
+        remote: Option<String>,
     },
 
     /// Push and create/update PRs for the entire stack
@@ -201,8 +206,10 @@ Examples:
   ez submit
   ez submit --draft
   ez submit --repo owner/repo
+  ez submit --remote fork --repo owner/repo
 
 Note: --draft only affects newly created PRs. Existing PRs are not changed.
+--remote and --repo apply to the first (bottom) branch only; children inherit.
 Use `ez ready` to undraft an existing PR.")]
     Submit {
         /// Create draft PRs (only affects new PRs, not existing ones)
@@ -228,6 +235,10 @@ Use `ez ready` to undraft an existing PR.")]
         /// Target repository for PR creation (owner/repo), overrides config
         #[arg(long)]
         repo: Option<String>,
+
+        /// Git remote to push to (overrides config), applied to first branch only
+        #[arg(long)]
+        remote: Option<String>,
     },
 
     /// Fetch trunk, detect merged PRs, clean up, and restack
@@ -387,16 +398,19 @@ Examples:
         force: bool,
     },
 
-    /// Merge the bottom PR of the current stack via GitHub
+    /// Merge the bottom PR of the current stack via GitHub, or merge locally with --local
     #[command(after_help = "\
 Examples:
   ez merge
   ez merge --yes
   ez merge --stack --yes
   ez merge --method squash
-  ez merge --method rebase")]
+  ez merge --method rebase
+  ez merge --local
+  ez merge --local --strategy rebase
+  ez merge --local --into main")]
     Merge {
-        /// Merge method: merge, squash, or rebase
+        /// Merge method for GitHub merge: merge, squash, or rebase
         #[arg(long, default_value = "squash")]
         method: String,
 
@@ -404,9 +418,39 @@ Examples:
         #[arg(short, long)]
         yes: bool,
 
-        /// Merge the current linear stack bottom-to-top
-        #[arg(long)]
+        /// Merge the current linear stack bottom-to-top (GitHub only)
+        #[arg(long, conflicts_with = "local")]
         stack: bool,
+
+        /// Merge locally without GitHub (squash by default)
+        #[arg(long)]
+        local: bool,
+
+        /// Local merge strategy: squash (default), rebase, or merge
+        #[arg(long, default_value = "squash", requires = "local")]
+        strategy: String,
+
+        /// Target branch to merge into (default: parent)
+        #[arg(long, requires = "local")]
+        into: Option<String>,
+
+        /// Force merge even with warnings (e.g., merge strategy)
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Fold a range of branches into one (squash commits)
+    #[command(after_help = "\
+Examples:
+  ez fold feat/a..feat/c
+  ez fold feat/a..feat/c --name feat/combined")]
+    Fold {
+        /// Branch range to fold (e.g., feat/a..feat/c)
+        range: String,
+
+        /// Name for the surviving branch (default: bottom of range)
+        #[arg(long)]
+        name: Option<String>,
     },
 
     /// Edit the PR for the current branch
@@ -885,12 +929,80 @@ mod tests {
             .expect("parse merge");
 
         match cli.command {
-            Commands::Merge { method, yes, stack } => {
+            Commands::Merge { method, yes, stack, local, .. } => {
                 assert_eq!(method, "rebase");
                 assert!(yes);
                 assert!(stack);
+                assert!(!local);
             }
             _ => panic!("expected merge command"),
+        }
+    }
+
+    #[test]
+    fn parses_merge_local_with_strategy() {
+        let cli = Cli::try_parse_from(["ez", "merge", "--local", "--strategy", "rebase"])
+            .expect("parse merge --local");
+
+        match cli.command {
+            Commands::Merge { local, strategy, into, force, stack, .. } => {
+                assert!(local);
+                assert_eq!(strategy, "rebase");
+                assert!(into.is_none());
+                assert!(!force);
+                assert!(!stack);
+            }
+            _ => panic!("expected merge command"),
+        }
+    }
+
+    #[test]
+    fn parses_merge_local_into_with_force() {
+        let cli = Cli::try_parse_from(["ez", "merge", "--local", "--into", "main", "--force"])
+            .expect("parse merge --local --into");
+
+        match cli.command {
+            Commands::Merge { local, into, force, strategy, .. } => {
+                assert!(local);
+                assert_eq!(into, Some("main".to_string()));
+                assert!(force);
+                assert_eq!(strategy, "squash"); // default
+            }
+            _ => panic!("expected merge command"),
+        }
+    }
+
+    #[test]
+    fn merge_stack_conflicts_with_local() {
+        let result = Cli::try_parse_from(["ez", "merge", "--stack", "--local"]);
+        assert!(result.is_err(), "--stack and --local should conflict");
+    }
+
+    #[test]
+    fn parses_fold_command() {
+        let cli = Cli::try_parse_from(["ez", "fold", "feat/a..feat/c"])
+            .expect("parse fold");
+
+        match cli.command {
+            Commands::Fold { range, name } => {
+                assert_eq!(range, "feat/a..feat/c");
+                assert!(name.is_none());
+            }
+            _ => panic!("expected fold command"),
+        }
+    }
+
+    #[test]
+    fn parses_fold_with_name() {
+        let cli = Cli::try_parse_from(["ez", "fold", "feat/a..feat/c", "--name", "feat/combined"])
+            .expect("parse fold --name");
+
+        match cli.command {
+            Commands::Fold { range, name } => {
+                assert_eq!(range, "feat/a..feat/c");
+                assert_eq!(name, Some("feat/combined".to_string()));
+            }
+            _ => panic!("expected fold command"),
         }
     }
 
@@ -946,10 +1058,51 @@ mod tests {
         let cli = Cli::try_parse_from(["ez", "push"]).expect("parse push without --repo");
 
         match cli.command {
-            Commands::Push { repo, .. } => {
+            Commands::Push { repo, remote, .. } => {
                 assert!(repo.is_none(), "--repo should default to None");
+                assert!(remote.is_none(), "--remote should default to None");
             }
             _ => panic!("expected push command"),
+        }
+    }
+
+    #[test]
+    fn parses_push_remote_flag() {
+        let cli = Cli::try_parse_from(["ez", "push", "--remote", "fork"])
+            .expect("parse push --remote");
+        match cli.command {
+            Commands::Push { remote, .. } => {
+                assert_eq!(remote.as_deref(), Some("fork"));
+            }
+            _ => panic!("expected push command"),
+        }
+    }
+
+    #[test]
+    fn parses_push_remote_and_repo_together() {
+        let cli = Cli::try_parse_from([
+            "ez", "push", "--remote", "fork", "--repo", "upstream/repo",
+        ])
+        .expect("parse push --remote --repo");
+        match cli.command {
+            Commands::Push { remote, repo, .. } => {
+                assert_eq!(remote.as_deref(), Some("fork"));
+                assert_eq!(repo.as_deref(), Some("upstream/repo"));
+            }
+            _ => panic!("expected push command"),
+        }
+    }
+
+    #[test]
+    fn parses_submit_remote_flag() {
+        let cli = Cli::try_parse_from(["ez", "submit", "--remote", "fork", "--repo", "org/repo"])
+            .expect("parse submit --remote --repo");
+        match cli.command {
+            Commands::Submit { remote, repo, .. } => {
+                assert_eq!(remote.as_deref(), Some("fork"));
+                assert_eq!(repo.as_deref(), Some("org/repo"));
+            }
+            _ => panic!("expected submit command"),
         }
     }
 }

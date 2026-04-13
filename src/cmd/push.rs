@@ -54,9 +54,10 @@ pub fn run(
     stage_all_files: bool,
     commit_message: Option<&str>,
     repo_override: Option<&str>,
+    remote_override: Option<&str>,
 ) -> Result<()> {
     if stack {
-        return crate::cmd::submit::run(draft, no_draft, title, body, body_file, repo_override);
+        return crate::cmd::submit::run(draft, no_draft, title, body, body_file, repo_override, remote_override);
     }
 
     if let Some(root) = git::current_linked_worktree_root()? {
@@ -114,7 +115,10 @@ pub fn run(
         bail!(EzError::BranchNotInStack(current.clone()));
     }
 
-    let remote = state.effective_push_remote(&current);
+    let remote = match remote_override {
+        Some(r) => r.to_string(),
+        None => state.effective_push_remote(&current),
+    };
 
     // Resolve --no-pr: flag > config > false
     let skip_pr = no_pr || state.no_pr.unwrap_or(false);
@@ -145,6 +149,11 @@ pub fn run(
     git::push(&remote, &current, true)?;
     sp.finish_and_clear();
     ui::info(&format!("Pushed `{current}`"));
+
+    // Store push_remote when --remote was explicitly passed on the CLI.
+    if let Some(r) = remote_override {
+        state.get_branch_mut(&current)?.push_remote = Some(r.to_string());
+    }
 
     if skip_pr {
         state.save()?;

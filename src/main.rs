@@ -158,6 +158,7 @@ fn run(cli: Cli) -> Result<()> {
             stage_all_files,
             message,
             repo,
+            remote,
         } => cmd::push::run(
             draft,
             no_draft,
@@ -171,6 +172,7 @@ fn run(cli: Cli) -> Result<()> {
             stage_all_files,
             message.as_deref(),
             repo.as_deref(),
+            remote.as_deref(),
         ),
         Commands::Submit {
             draft,
@@ -179,6 +181,7 @@ fn run(cli: Cli) -> Result<()> {
             body,
             body_file,
             repo,
+            remote,
         } => cmd::submit::run(
             draft,
             no_draft,
@@ -186,6 +189,7 @@ fn run(cli: Cli) -> Result<()> {
             body.as_deref(),
             body_file.as_deref(),
             repo.as_deref(),
+            remote.as_deref(),
         ),
         Commands::Sync {
             dry_run,
@@ -205,7 +209,8 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Parent => cmd::parent::run(),
         Commands::Delete { branch, force, yes } => cmd::delete::run(branch.as_deref(), force, yes),
         Commands::Move { onto, force } => cmd::move_branch::run(&onto, force),
-        Commands::Merge { method, yes, stack } => cmd::merge::run(&method, yes, stack),
+        Commands::Merge { method, yes, stack, local, strategy, into, force } => cmd::merge::run(&method, yes, stack, local, &strategy, into.as_deref(), force),
+        Commands::Fold { range, name } => cmd::fold::run(&range, name.as_deref()),
         Commands::PrEdit {
             title,
             body,

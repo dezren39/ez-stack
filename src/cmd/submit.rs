@@ -23,6 +23,7 @@ pub fn run(
     body: Option<&str>,
     body_file: Option<&str>,
     repo_override: Option<&str>,
+    remote_override: Option<&str>,
 ) -> Result<()> {
     let mut state = StackState::load()?;
     if let Some(root) = git::current_linked_worktree_root()? {
@@ -66,17 +67,32 @@ pub fn run(
     let body_explicitly_set = body.is_some() || body_file.is_some();
     let mut pr_urls: Vec<(String, String)> = Vec::new();
 
-    for branch in &branches_to_submit {
+    for (i, branch) in branches_to_submit.iter().enumerate() {
         let parent = state.get_branch(branch)?.parent.clone();
 
-        // Resolve push remote per-branch.
-        let remote = state.effective_push_remote(branch);
+        // --remote applies only to the first (bottom) branch; children inherit.
+        let is_first = i == 0;
+        let branch_remote_override = if is_first { remote_override } else { None };
+
+        // Resolve push remote per-branch (CLI override > stored > inherited > config).
+        let remote = match branch_remote_override {
+            Some(r) => r.to_string(),
+            None => state.effective_push_remote(branch),
+        };
 
         // Push with force-with-lease.
         let sp = ui::spinner(&format!("Pushing `{branch}`..."));
         git::fetch_branch(&remote, branch)?;
         git::push(&remote, branch, true)?;
         sp.finish_and_clear();
+
+        // Store push_remote when --remote was explicitly passed for this branch.
+        if let Some(r) = branch_remote_override {
+            state.get_branch_mut(branch)?.push_remote = Some(r.to_string());
+        }
+
+        // --repo also applies only to the first branch; children inherit via effective_pr_repo.
+        let branch_repo_override = if is_first { repo_override } else { None };
 
         // Create or update the PR.
         let pr_url = push_or_update_pr(
@@ -87,7 +103,7 @@ pub fn run(
             title,
             resolved_body.as_deref(),
             body_explicitly_set,
-            repo_override,
+            branch_repo_override,
         )?;
 
         let pr_number = state.get_branch(branch).ok().and_then(|m| m.pr_number);
