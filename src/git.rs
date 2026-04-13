@@ -583,6 +583,24 @@ pub fn log_oneline(range: &str, max: usize) -> Result<Vec<(String, String)>> {
         .collect())
 }
 
+/// Return `(short_sha, full_commit_message)` for each commit in `range`.
+///
+/// Used by reference extraction to scan commit messages for keywords,
+/// issue/PR refs, and SHA mentions.
+pub fn log_full_messages(range: &str) -> Result<Vec<(String, String)>> {
+    // Use %x00 as record separator so multi-line messages are parsed correctly.
+    let output = run_git(&["log", "--format=%h%x00%B%x00", range])?;
+    Ok(output
+        .split("\0\0")
+        .filter(|s| !s.trim().is_empty())
+        .filter_map(|record| {
+            let record = record.trim_start_matches('\n');
+            let (sha, msg) = record.split_once('\0')?;
+            Some((sha.trim().to_string(), msg.trim().to_string()))
+        })
+        .collect())
+}
+
 /// Get seconds since the last commit on a branch. Returns None if no commits or error.
 pub fn log_oneline_time(branch: &str) -> Option<u64> {
     let output = run_git(&["log", "-1", "--format=%ct", branch]).ok()?;

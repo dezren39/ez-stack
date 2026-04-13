@@ -8,38 +8,6 @@ use crate::github;
 use crate::stack::StackState;
 use crate::ui;
 
-fn stack_ancestors(
-    state: &StackState,
-    branch: &str,
-    repo: &str,
-) -> Vec<crate::stack_body::AncestorPr> {
-    let path = state.path_to_trunk(branch);
-    let len = path.len();
-    if len < 2 {
-        return vec![];
-    }
-
-    path[1..len - 1]
-        .iter()
-        .rev()
-        .map(|b| {
-            let pr_number = state.branches.get(b).and_then(|m| m.pr_number);
-            let pr_url = pr_number.and_then(|n| {
-                if repo.is_empty() {
-                    None
-                } else {
-                    Some(format!("https://github.com/{repo}/pull/{n}"))
-                }
-            });
-            crate::stack_body::AncestorPr {
-                branch: b.clone(),
-                pr_number,
-                pr_url,
-            }
-        })
-        .collect()
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     draft: bool,
@@ -193,6 +161,10 @@ pub fn run(
     let pr_number = state.get_branch(&current).ok().and_then(|m| m.pr_number);
 
     state.save()?;
+
+    // Update stack sections on contiguous sibling PRs.
+    update_contiguous_stack_bodies(&state, &current);
+
     ui::success(&format!("PR: {pr_url}"));
 
     ui::receipt(&serde_json::json!({
@@ -237,20 +209,17 @@ pub fn push_or_update_pr(
     // Resolve the push remote for cross-fork head prefix.
     let push_remote = state.effective_push_remote(branch);
 
-    // Collect upstream ancestor PRs for the stack section.
-    // path_to_trunk returns [branch, ..., trunk]; we want ancestors only.
-    let ancestors = stack_ancestors(state, branch, &github::repo_name().unwrap_or_default());
-
     let existing_pr = github::get_pr_status_in_repo(branch, effective_repo.as_deref())?;
 
     let pr_url = match existing_pr {
         Some(pr) => {
             state.get_branch_mut(branch)?.pr_number = Some(pr.number);
 
+            // Build the full stack tree (PR number already known for existing PRs).
+            let tree_roots = crate::stack_body::build_full_tree(state, branch);
+            let stack_tree = crate::stack_body::render_full_tree(&tree_roots);
+
             // Update PR base only when the stack parent is genuinely an ancestor of this branch.
-            // If the branch was rebased onto a different base outside of ez (bypassing stack
-            // metadata), is_ancestor returns false and we leave the PR base alone so we don't
-            // clobber a manual `gh pr edit --base` change.
             if pr.base != parent {
                 if git::is_ancestor(parent, branch) {
                     if let Err(e) = github::update_pr_base_in_repo(
@@ -274,10 +243,19 @@ pub fn push_or_update_pr(
                 }
             }
 
-            // Only update body if user explicitly passed --body/--body-file.
+            // Body update logic:
+            // 1. If user explicitly passed --body/--body-file: build full ez body.
+            // 2. If existing body has ez markers: regenerate all ez sections.
+            // 3. If title override only: update title.
             if body_explicitly_set {
                 let raw_body = body_override.unwrap_or("Part of a stack managed by `ez`.");
-                let body = crate::stack_body::build_stack_body(&ancestors, raw_body);
+                let refs_section = extract_references_for_branch(state, branch, parent);
+                let body = crate::stack_body::build_ez_body(
+                    raw_body,
+                    Some("Part of a stack managed by `ez`."),
+                    refs_section.as_deref(),
+                    &stack_tree,
+                );
                 if let Err(e) = github::edit_pr_in_repo(
                     pr.number,
                     title_override,
@@ -291,16 +269,65 @@ pub fn push_or_update_pr(
                 } else {
                     ui::info(&format!("Updated PR #{}", pr.number));
                 }
-            } else if title_override.is_some() {
-                if let Err(e) =
-                    github::edit_pr_in_repo(pr.number, title_override, None, effective_repo.as_deref())
-                {
-                    ui::warn(&format!(
-                        "Push succeeded but PR #{} title could not be updated: {e}",
-                        pr.number
-                    ));
-                } else {
-                    ui::info(&format!("Updated PR #{} title", pr.number));
+            } else {
+                // Fetch current body to check for ez markers.
+                let current_body = github::get_pr_body_in_repo(pr.number, effective_repo.as_deref())
+                    .unwrap_or_default();
+                if crate::stack_body::has_ez_markers(&current_body) {
+                    // Regenerate ez sections, preserving user content above markers.
+                    let parsed = crate::stack_body::parse_ez_body(&current_body);
+                    let refs_section = if parsed.has_references_markers {
+                        extract_references_for_branch(state, branch, parent)
+                    } else {
+                        None // User removed references subsection — don't regenerate.
+                    };
+                    let summary = if parsed.has_summary_markers {
+                        Some(parsed.summary.as_deref().unwrap_or("Part of a stack managed by `ez`."))
+                    } else {
+                        None // User removed summary subsection.
+                    };
+                    let body = crate::stack_body::build_ez_body(
+                        &parsed.user_body,
+                        summary,
+                        refs_section.as_deref(),
+                        &stack_tree,
+                    );
+                    if body != current_body {
+                        if let Err(e) = github::edit_pr_in_repo(
+                            pr.number,
+                            title_override,
+                            Some(&body),
+                            effective_repo.as_deref(),
+                        ) {
+                            ui::warn(&format!(
+                                "Push succeeded but PR #{} body could not be updated: {e}",
+                                pr.number
+                            ));
+                        } else {
+                            ui::info(&format!("Updated PR #{} body", pr.number));
+                        }
+                    } else if title_override.is_some() {
+                        if let Err(e) =
+                            github::edit_pr_in_repo(pr.number, title_override, None, effective_repo.as_deref())
+                        {
+                            ui::warn(&format!(
+                                "Push succeeded but PR #{} title could not be updated: {e}",
+                                pr.number
+                            ));
+                        }
+                    }
+                } else if title_override.is_some() {
+                    // No ez markers — only update title if requested.
+                    if let Err(e) =
+                        github::edit_pr_in_repo(pr.number, title_override, None, effective_repo.as_deref())
+                    {
+                        ui::warn(&format!(
+                            "Push succeeded but PR #{} title could not be updated: {e}",
+                            pr.number
+                        ));
+                    } else {
+                        ui::info(&format!("Updated PR #{} title", pr.number));
+                    }
                 }
             }
 
@@ -316,11 +343,20 @@ pub fn push_or_update_pr(
                 .unwrap_or_else(|| branch.to_string());
 
             let title = title_override.unwrap_or(&derived_title);
-            let default_body = "Part of a stack managed by `ez`.";
-            let raw_body = body_override.unwrap_or(default_body);
+            let user_body = body_override.unwrap_or("");
 
-            // Always append stack section to new PRs.
-            let body = crate::stack_body::build_stack_body(&ancestors, raw_body);
+            // Extract references from commit messages if no explicit body.
+            let refs_section = extract_references_for_branch(state, branch, parent);
+
+            // Build initial body with stack tree (current branch won't have PR link yet).
+            let tree_roots = crate::stack_body::build_full_tree(state, branch);
+            let stack_tree = crate::stack_body::render_full_tree(&tree_roots);
+            let body = crate::stack_body::build_ez_body(
+                user_body,
+                Some("Part of a stack managed by `ez`."),
+                refs_section.as_deref(),
+                &stack_tree,
+            );
 
             // Compute cross-fork --head value.
             let head = github::cross_fork_head(branch, &push_remote, effective_repo.as_deref());
@@ -338,6 +374,20 @@ pub fn push_or_update_pr(
             if let Some(ref r) = resolved_override {
                 state.get_branch_mut(branch)?.pr_repo = Some(r.clone());
             }
+
+            // Now rebuild the tree with the PR number and update the body.
+            let tree_roots = crate::stack_body::build_full_tree(state, branch);
+            let new_stack_tree = crate::stack_body::render_full_tree(&tree_roots);
+            if new_stack_tree != stack_tree {
+                let updated_body = crate::stack_body::build_ez_body(
+                    user_body,
+                    Some("Part of a stack managed by `ez`."),
+                    refs_section.as_deref(),
+                    &new_stack_tree,
+                );
+                let _ = github::edit_pr_in_repo(pr.number, None, Some(&updated_body), effective_repo.as_deref());
+            }
+
             ui::info(&format!("Created PR #{}: {}", pr.number, pr.url));
             pr.url
         }
@@ -346,54 +396,115 @@ pub fn push_or_update_pr(
     Ok(pr_url)
 }
 
+/// Extract references from commit messages on a branch.
+fn extract_references_for_branch(
+    state: &StackState,
+    branch: &str,
+    parent: &str,
+) -> Option<String> {
+    let range = format!("{parent}..{branch}");
+    let messages = git::log_full_messages(&range).unwrap_or_default();
+    if messages.is_empty() {
+        return None;
+    }
+
+    let extracted = crate::commit_refs::extract_refs_from_messages(&messages);
+    if extracted.is_empty() {
+        return None;
+    }
+
+    // Build stack PR number map for resolving plain #N references.
+    let mut stack_prs = std::collections::HashMap::new();
+    for (name, meta) in &state.branches {
+        if let Some(num) = meta.pr_number {
+            let url = crate::stack_body::pr_url_for_branch_pub(state, name)
+                .unwrap_or_default();
+            stack_prs.insert(num, (name.clone(), url));
+        }
+    }
+
+    // Determine upstream repo for resolving plain #N refs.
+    let upstream_repo = determine_upstream_repo(state, branch);
+
+    let resolved = crate::commit_refs::resolve_refs(&extracted, &stack_prs, &upstream_repo);
+    crate::commit_refs::format_references_section(&resolved)
+}
+
+/// Determine the upstream repo for resolving plain #N references.
+///
+/// Priority: first parent's pr_repo → state.repo → default remote repo.
+fn determine_upstream_repo(state: &StackState, branch: &str) -> String {
+    // Walk up to find first ancestor with a pr_repo.
+    let path = state.path_to_trunk(branch);
+    for b in &path {
+        if let Some(meta) = state.branches.get(b.as_str()) {
+            if let Some(ref repo) = meta.pr_repo {
+                return repo.clone();
+            }
+        }
+    }
+    // Fall back to global repo config.
+    if let Some(ref repo) = state.repo {
+        return repo.clone();
+    }
+    // Fall back to `gh repo view` default.
+    github::repo_name().unwrap_or_default()
+}
+
+/// Update the stack section on all contiguous PRs in the chain.
+///
+/// After pushing a branch, this walks the contiguous PR chain and
+/// re-renders the stack tree section on each sibling PR.
+pub fn update_contiguous_stack_bodies(state: &StackState, pushed_branch: &str) {
+    let chain = crate::stack_body::contiguous_pr_chain(state, pushed_branch);
+
+    for branch_name in &chain {
+        if branch_name == pushed_branch {
+            continue; // Already updated during push.
+        }
+        let Some(meta) = state.branches.get(branch_name.as_str()) else {
+            continue;
+        };
+        let Some(pr_number) = meta.pr_number else {
+            continue;
+        };
+
+        let effective_repo = state.effective_pr_repo(branch_name);
+
+        // Fetch current body.
+        let current_body = match github::get_pr_body_in_repo(pr_number, effective_repo.as_deref()) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+
+        if !crate::stack_body::has_ez_markers(&current_body) {
+            continue; // No ez markers — skip.
+        }
+
+        // Build the tree from this branch's perspective.
+        let tree_roots = crate::stack_body::build_full_tree(state, branch_name);
+        let new_stack = crate::stack_body::render_full_tree(&tree_roots);
+
+        // Replace only the stack subsection.
+        if let Some(updated_body) = crate::stack_body::update_stack_section_only(&current_body, &new_stack) {
+            if updated_body != current_body {
+                if let Err(e) = github::edit_pr_in_repo(pr_number, None, Some(&updated_body), effective_repo.as_deref()) {
+                    ui::warn(&format!(
+                        "Could not update stack section on PR #{}: {e}",
+                        pr_number
+                    ));
+                } else {
+                    ui::info(&format!("Updated stack section on PR #{}", pr_number));
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::{CwdGuard, init_git_repo, take_env_lock};
-
-    #[test]
-    fn stack_ancestors_orders_trunk_closest_first_and_builds_urls() {
-        let mut state = StackState::new("main".to_string());
-        state.add_branch("feat/a", "main", "aaa", None, None);
-        state.add_branch("feat/b", "feat/a", "bbb", None, None);
-        state.add_branch("feat/c", "feat/b", "ccc", None, None);
-        state.get_branch_mut("feat/a").expect("a").pr_number = Some(10);
-        state.get_branch_mut("feat/b").expect("b").pr_number = Some(20);
-
-        let ancestors = stack_ancestors(&state, "feat/c", "org/repo");
-        assert_eq!(ancestors.len(), 2);
-        assert_eq!(ancestors[0].branch, "feat/a");
-        assert_eq!(ancestors[1].branch, "feat/b");
-        assert_eq!(
-            ancestors[0].pr_url.as_deref(),
-            Some("https://github.com/org/repo/pull/10")
-        );
-        assert_eq!(
-            ancestors[1].pr_url.as_deref(),
-            Some("https://github.com/org/repo/pull/20")
-        );
-    }
-
-    #[test]
-    fn stack_ancestors_handles_empty_repo_name() {
-        let mut state = StackState::new("main".to_string());
-        state.add_branch("feat/a", "main", "aaa", None, None);
-        state.add_branch("feat/b", "feat/a", "bbb", None, None);
-        state.get_branch_mut("feat/a").expect("a").pr_number = Some(10);
-
-        let ancestors = stack_ancestors(&state, "feat/b", "");
-        assert_eq!(ancestors.len(), 1);
-        assert!(ancestors[0].pr_url.is_none());
-    }
-
-    #[test]
-    fn stack_ancestors_single_branch_returns_empty() {
-        let mut state = StackState::new("main".to_string());
-        state.add_branch("feat/a", "main", "aaa", None, None);
-
-        let ancestors = stack_ancestors(&state, "feat/a", "org/repo");
-        assert!(ancestors.is_empty(), "branch directly on trunk has no stack ancestors");
-    }
 
     #[test]
     fn draft_resolution_no_draft_flag_wins() {

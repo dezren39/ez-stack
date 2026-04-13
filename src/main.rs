@@ -1,5 +1,6 @@
 mod cli;
 mod cmd;
+mod commit_refs;
 mod dev;
 mod error;
 #[allow(dead_code)]
