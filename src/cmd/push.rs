@@ -254,7 +254,16 @@ pub fn push_or_update_pr(
 
     // Detect cross-repo repoint: if the target repo for the new PR differs from
     // where the existing PR lives, close the old and create in the new repo.
-    // Target repo: --repo override > branch's target_pr_repo (set by sync) > parent's effective repo.
+    //
+    // Repoint triggers:
+    //   1. --repo CLI override targets a different repo
+    //   2. target_pr_repo hint (set by sync when parent was merged)
+    //   3. Parent's effective_pr_repo differs AND parent's PR was merged
+    //      (the child should follow to the repo where the parent landed).
+    //
+    // When the parent is still an active managed branch with an open PR,
+    // a repo mismatch is intentional (fork workflow: child on fork, parent
+    // PR on upstream) and should NOT trigger repoint.
     let (existing_pr, effective_repo, did_repoint) = if let Some(ref pr) = existing_pr {
         let pr_current_repo = lookup_repo.clone();
         let target_pr_repo_hint = state
@@ -264,9 +273,30 @@ pub fn push_or_update_pr(
         let target_repo = if resolved_override.is_some() {
             resolved_override.clone()
         } else {
-            target_pr_repo_hint
-                .or_else(|| state.effective_pr_repo(parent))
-                .or_else(|| effective_repo.clone())
+            target_pr_repo_hint.or_else(|| {
+                // Infer from parent only when the parent's PR has been merged.
+                // Check: parent is either trunk (removed from stack) or its PR
+                // is merged/closed. If parent still has an open PR, the repo
+                // mismatch is intentional (fork workflow).
+                let parent_pr_merged = if state.is_trunk(parent) {
+                    true // parent was removed from stack after merge
+                } else if let Ok(parent_meta) = state.get_branch(parent) {
+                    parent_meta.pr_number.is_some_and(|_n| {
+                        let parent_repo = state.effective_pr_repo(parent);
+                        github::get_pr_status_in_repo(parent, parent_repo.as_deref())
+                            .ok()
+                            .flatten()
+                            .is_some_and(|info| info.merged)
+                    })
+                } else {
+                    false
+                };
+                if parent_pr_merged {
+                    state.effective_pr_repo(parent)
+                } else {
+                    None
+                }
+            })
         };
         let needs_repoint = force_repoint || {
             match (&pr_current_repo, &target_repo) {
