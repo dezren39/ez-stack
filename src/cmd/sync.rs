@@ -383,12 +383,19 @@ fn run_sync_inner(force: bool) -> Result<()> {
 
             // Propagate repo metadata to direct children BEFORE removing the branch,
             // so children don't lose their effective_pr_repo resolution chain.
+            //
+            // Only propagate pr_repo to children that do NOT already have a PR.
+            // If a child already has a pr_number, its PR lives wherever it was
+            // originally created — overwriting pr_repo would make push look up
+            // the existing PR in the wrong repo and miss the repoint opportunity.
+            // Push's repoint detection compares the child's stored repo against
+            // the parent's effective repo to handle the close-and-recreate flow.
             let direct_children = state.children_of(branch_name);
             let merged_pr_repo = state.effective_pr_repo(branch_name);
             let merged_push_remote = Some(state.effective_push_remote(branch_name));
             for child in &direct_children {
                 let child_meta = state.get_branch_mut(child)?;
-                if child_meta.pr_repo.is_none() {
+                if child_meta.pr_repo.is_none() && child_meta.pr_number.is_none() {
                     child_meta.pr_repo = merged_pr_repo.clone();
                 }
                 if child_meta.push_remote.is_none() {

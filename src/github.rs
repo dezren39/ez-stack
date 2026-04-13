@@ -331,6 +331,18 @@ pub fn repo_name_from_url(url: &str) -> Option<String> {
     }
 }
 
+/// Extract `owner/repo` from a GitHub PR URL like
+/// `https://github.com/owner/repo/pull/123`.
+pub fn repo_from_pr_url(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://github.com/")?;
+    let parts: Vec<&str> = rest.splitn(4, '/').collect();
+    if parts.len() >= 3 && parts[2] == "pull" {
+        Some(format!("{}/{}", parts[0], parts[1]))
+    } else {
+        None
+    }
+}
+
 pub fn repo_name() -> Result<String> {
     let output = run_gh(&[
         "repo",
@@ -928,6 +940,25 @@ exit 0
             repo_name_from_url("https://gitlab.com/user/repo.git"),
             None
         );
+    }
+
+    #[test]
+    fn repo_from_pr_url_extracts_owner_repo() {
+        assert_eq!(
+            repo_from_pr_url("https://github.com/dezren39/ez-stack/pull/9"),
+            Some("dezren39/ez-stack".to_string())
+        );
+        assert_eq!(
+            repo_from_pr_url("https://github.com/developing-today-forks/ez-stack/pull/1"),
+            Some("developing-today-forks/ez-stack".to_string())
+        );
+    }
+
+    #[test]
+    fn repo_from_pr_url_returns_none_for_non_pr_urls() {
+        assert_eq!(repo_from_pr_url("https://github.com/user/repo"), None);
+        assert_eq!(repo_from_pr_url("https://gitlab.com/user/repo/pull/1"), None);
+        assert_eq!(repo_from_pr_url("not a url"), None);
     }
 
     #[test]

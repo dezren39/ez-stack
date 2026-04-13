@@ -434,12 +434,15 @@ pub fn push_or_update_pr(
                 effective_repo.as_deref(),
             )?;
             state.get_branch_mut(branch)?.pr_number = Some(pr.number);
-            // Persist pr_repo when --repo was explicitly passed OR when we just
-            // repointed (the effective_repo changed, must record the new target).
-            if did_repoint || resolved_override.is_some() {
-                if let Some(ref r) = effective_repo {
-                    state.get_branch_mut(branch)?.pr_repo = Some(r.clone());
-                }
+            // Always persist pr_repo so we know where the PR actually lives.
+            // Use: explicit --repo > repoint target > repo extracted from PR URL.
+            let actual_repo = if did_repoint || resolved_override.is_some() {
+                effective_repo.clone()
+            } else {
+                effective_repo.clone().or_else(|| github::repo_from_pr_url(&pr.url))
+            };
+            if let Some(ref r) = actual_repo {
+                state.get_branch_mut(branch)?.pr_repo = Some(r.clone());
             }
 
             // Now rebuild the tree with the PR number and update the body.
