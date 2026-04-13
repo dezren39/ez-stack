@@ -57,24 +57,61 @@ pub fn create_pr_in_repo(
         args.push("--repo");
         args.push(&repo_arg);
     }
-    let url = run_gh(&args)?;
+    match run_gh(&args) {
+        Ok(url) => {
+            // Extract PR number from URL
+            let number = url
+                .rsplit('/')
+                .next()
+                .and_then(|s| s.parse::<u64>().ok())
+                .ok_or_else(|| anyhow::anyhow!("could not parse PR number from URL: {url}"))?;
 
-    // Extract PR number from URL
-    let number = url
-        .rsplit('/')
-        .next()
-        .and_then(|s| s.parse::<u64>().ok())
-        .ok_or_else(|| anyhow::anyhow!("could not parse PR number from URL: {url}"))?;
+            Ok(PrInfo {
+                number,
+                url,
+                state: "OPEN".to_string(),
+                title: title.to_string(),
+                base: base.to_string(),
+                is_draft: draft,
+                merged: false,
+            })
+        }
+        Err(e) => {
+            // Handle "already exists" — gh stderr contains the existing PR URL.
+            let msg = e.to_string();
+            if msg.contains("already exists") {
+                if let Some(url) = extract_url_from_error(&msg) {
+                    let number = url
+                        .rsplit('/')
+                        .next()
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(0);
+                    crate::ui::warn(&format!(
+                        "PR already exists: {url} — linking to existing PR #{}",
+                        number
+                    ));
+                    return Ok(PrInfo {
+                        number,
+                        url,
+                        state: "OPEN".to_string(),
+                        title: title.to_string(),
+                        base: base.to_string(),
+                        is_draft: draft,
+                        merged: false,
+                    });
+                }
+            }
+            Err(e)
+        }
+    }
+}
 
-    Ok(PrInfo {
-        number,
-        url,
-        state: "OPEN".to_string(),
-        title: title.to_string(),
-        base: base.to_string(),
-        is_draft: draft,
-        merged: false,
-    })
+/// Extract a GitHub PR URL from an error message like:
+/// "a pull request for branch ... already exists:\nhttps://github.com/owner/repo/pull/123"
+fn extract_url_from_error(msg: &str) -> Option<String> {
+    msg.split_whitespace()
+        .find(|s| s.starts_with("https://github.com/") && s.contains("/pull/"))
+        .map(|s| s.trim_end_matches(|c: char| !c.is_ascii_digit()).to_string())
 }
 
 pub fn update_pr_base(pr_number: u64, new_base: &str) -> Result<()> {
@@ -99,10 +136,31 @@ pub fn get_pr_status(branch: &str) -> Result<Option<PrInfo>> {
 }
 
 pub fn get_pr_status_in_repo(branch: &str, repo: Option<&str>) -> Result<Option<PrInfo>> {
+    // For cross-fork PRs, gh pr view needs the fork-prefixed head (e.g. "dezren39:feat/config").
+    // Try the bare branch name first; if that fails and we have a repo, retry with cross-fork prefix.
+    let result = get_pr_status_in_repo_with_head(branch, repo);
+    if let Ok(Some(_)) = &result {
+        return result;
+    }
+    // If bare name failed and we have a target repo, try with cross-fork head prefix.
+    if repo.is_some() {
+        // Load state to get the push remote for cross-fork head computation.
+        if let Ok(state) = crate::stack::StackState::load() {
+            let push_remote = state.effective_push_remote(branch);
+            let cross_fork = cross_fork_head(branch, &push_remote, repo);
+            if cross_fork != branch {
+                return get_pr_status_in_repo_with_head(&cross_fork, repo);
+            }
+        }
+    }
+    result
+}
+
+fn get_pr_status_in_repo_with_head(head: &str, repo: Option<&str>) -> Result<Option<PrInfo>> {
     let mut args = vec![
         "pr",
         "view",
-        branch,
+        head,
         "--json",
         "number,url,state,title,isDraft,mergedAt,baseRefName",
     ];
@@ -893,5 +951,26 @@ exit 0
             resolve_repo_shorthand("dezren39"),
             "dezren39/ez-stack"
         );
+    }
+
+    #[test]
+    fn extract_url_from_error_finds_pr_url() {
+        let msg = r#"a pull request for branch "dezren39:feat/config" into branch "main" already exists:
+https://github.com/rohoswagger/ez-stack/pull/9"#;
+        assert_eq!(
+            super::extract_url_from_error(msg).as_deref(),
+            Some("https://github.com/rohoswagger/ez-stack/pull/9")
+        );
+    }
+
+    #[test]
+    fn extract_url_from_error_returns_none_for_no_url() {
+        assert!(super::extract_url_from_error("some other error").is_none());
+    }
+
+    #[test]
+    fn extract_url_from_error_ignores_non_pr_urls() {
+        let msg = "see https://github.com/owner/repo for details";
+        assert!(super::extract_url_from_error(msg).is_none());
     }
 }

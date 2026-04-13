@@ -139,7 +139,8 @@ Examples:
   ez push --stack
   ez push -am \"feat: add auth\"
   ez push -Am \"feat: add auth and new snapshots\"
-  ez push --repo owner/repo")]
+   ez push --repo owner/repo
+  ez push --remote fork --repo owner/repo")]
     Push {
         /// Create a draft PR
         #[arg(long, conflicts_with = "no_pr")]
@@ -193,6 +194,10 @@ Examples:
         /// Target repository for PR creation (owner/repo), overrides config
         #[arg(long)]
         repo: Option<String>,
+
+        /// Git remote to push to (overrides config), stored per-branch on first use
+        #[arg(long)]
+        remote: Option<String>,
     },
 
     /// Push and create/update PRs for the entire stack
@@ -201,8 +206,10 @@ Examples:
   ez submit
   ez submit --draft
   ez submit --repo owner/repo
+  ez submit --remote fork --repo owner/repo
 
 Note: --draft only affects newly created PRs. Existing PRs are not changed.
+--remote and --repo apply to the first (bottom) branch only; children inherit.
 Use `ez ready` to undraft an existing PR.")]
     Submit {
         /// Create draft PRs (only affects new PRs, not existing ones)
@@ -228,6 +235,10 @@ Use `ez ready` to undraft an existing PR.")]
         /// Target repository for PR creation (owner/repo), overrides config
         #[arg(long)]
         repo: Option<String>,
+
+        /// Git remote to push to (overrides config), applied to first branch only
+        #[arg(long)]
+        remote: Option<String>,
     },
 
     /// Fetch trunk, detect merged PRs, clean up, and restack
@@ -1047,10 +1058,51 @@ mod tests {
         let cli = Cli::try_parse_from(["ez", "push"]).expect("parse push without --repo");
 
         match cli.command {
-            Commands::Push { repo, .. } => {
+            Commands::Push { repo, remote, .. } => {
                 assert!(repo.is_none(), "--repo should default to None");
+                assert!(remote.is_none(), "--remote should default to None");
             }
             _ => panic!("expected push command"),
+        }
+    }
+
+    #[test]
+    fn parses_push_remote_flag() {
+        let cli = Cli::try_parse_from(["ez", "push", "--remote", "fork"])
+            .expect("parse push --remote");
+        match cli.command {
+            Commands::Push { remote, .. } => {
+                assert_eq!(remote.as_deref(), Some("fork"));
+            }
+            _ => panic!("expected push command"),
+        }
+    }
+
+    #[test]
+    fn parses_push_remote_and_repo_together() {
+        let cli = Cli::try_parse_from([
+            "ez", "push", "--remote", "fork", "--repo", "upstream/repo",
+        ])
+        .expect("parse push --remote --repo");
+        match cli.command {
+            Commands::Push { remote, repo, .. } => {
+                assert_eq!(remote.as_deref(), Some("fork"));
+                assert_eq!(repo.as_deref(), Some("upstream/repo"));
+            }
+            _ => panic!("expected push command"),
+        }
+    }
+
+    #[test]
+    fn parses_submit_remote_flag() {
+        let cli = Cli::try_parse_from(["ez", "submit", "--remote", "fork", "--repo", "org/repo"])
+            .expect("parse submit --remote --repo");
+        match cli.command {
+            Commands::Submit { remote, repo, .. } => {
+                assert_eq!(remote.as_deref(), Some("fork"));
+                assert_eq!(repo.as_deref(), Some("org/repo"));
+            }
+            _ => panic!("expected submit command"),
         }
     }
 }
