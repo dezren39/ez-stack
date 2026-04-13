@@ -67,8 +67,23 @@ impl StackState {
     }
 
     /// Resolve the effective push remote for a branch.
-    /// Priority: branch.push_remote > git tracking remote > state.remote > git default_remote()
+    ///
+    /// Resolution order:
+    ///   1. branch.push_remote (per-branch override)
+    ///   2. Parent's effective push remote (walk up the stack)
+    ///   3. Git tracking remote for this branch
+    ///   4. Default branch's tracking remote
+    ///   5. state.remote (global config)
+    ///   6. git default_remote()
     pub fn effective_push_remote(&self, branch: &str) -> String {
+        self.effective_push_remote_inner(branch, 0)
+    }
+
+    fn effective_push_remote_inner(&self, branch: &str, depth: usize) -> String {
+        // Guard against cycles in stack metadata.
+        if depth > 50 {
+            return git::default_remote();
+        }
         // 1. Per-branch override in stack.json
         if let Some(meta) = self.branches.get(branch) {
             if let Some(ref r) = meta.push_remote {
@@ -76,26 +91,88 @@ impl StackState {
                     return r.clone();
                 }
             }
+            // 2. Walk up to parent (if parent is a managed branch, not trunk)
+            if !self.is_trunk(&meta.parent) {
+                let parent_remote = self.effective_push_remote_inner(&meta.parent, depth + 1);
+                return parent_remote;
+            }
         }
-        // 2. Git tracking remote for this branch
+        // 3. Git tracking remote for this branch
         if let Some(r) = git::tracking_remote(branch) {
             return r;
         }
-        // 3. Global state.remote (if non-empty and the remote actually exists)
+        // 4. Default branch's tracking remote
+        if let Ok(default_branch) = git::default_branch() {
+            if let Some(r) = git::tracking_remote(&default_branch) {
+                return r;
+            }
+        }
+        // 5. Global state.remote (if non-empty and the remote actually exists)
         if !self.remote.is_empty() && git::remote_exists(&self.remote) {
             return self.remote.clone();
         }
-        // 4. Git default remote
+        // 6. Git default remote
         git::default_remote()
     }
 
     /// Resolve the effective PR target repo for a branch.
-    /// Priority: branch.pr_repo > state.repo (non-empty) > None.
+    ///
+    /// Resolution order:
+    ///   1. branch.pr_repo (per-branch, stored on first push with --repo)
+    ///   2. Parent's effective push remote → extract owner/repo from URL
+    ///      (the parent branch lives there, so that's where a PR can target it)
+    ///   3. Git tracking remote for this branch → extract owner/repo from URL
+    ///   4. Default branch's tracking remote → extract owner/repo from URL
+    ///   5. state.repo (global config)
+    ///   6. None (let gh decide)
     pub fn effective_pr_repo(&self, branch: &str) -> Option<String> {
-        self.branches
-            .get(branch)
-            .and_then(|m| m.pr_repo.clone())
-            .or_else(|| self.repo.clone().filter(|s| !s.is_empty()))
+        self.effective_pr_repo_inner(branch, 0)
+    }
+
+    fn effective_pr_repo_inner(&self, branch: &str, depth: usize) -> Option<String> {
+        // Guard against cycles in stack metadata.
+        if depth > 50 {
+            return None;
+        }
+        // 1. Per-branch override
+        if let Some(meta) = self.branches.get(branch) {
+            if let Some(ref r) = meta.pr_repo {
+                if !r.is_empty() {
+                    return Some(r.clone());
+                }
+            }
+            // 2. Parent's push remote → repo from URL.
+            // The parent branch was pushed to some remote; that remote's repo is where
+            // this branch's PR should be created (because the base ref exists there).
+            if !self.is_trunk(&meta.parent) {
+                let parent_remote = self.effective_push_remote_inner(&meta.parent, depth + 1);
+                if let Some(repo) = Self::repo_from_remote(&parent_remote) {
+                    return Some(repo);
+                }
+            }
+        }
+        // 3. Git tracking remote for this branch → repo from URL
+        if let Some(remote_name) = git::tracking_remote(branch) {
+            if let Some(repo) = Self::repo_from_remote(&remote_name) {
+                return Some(repo);
+            }
+        }
+        // 4. Default branch's tracking remote → repo from URL
+        if let Ok(default_branch) = git::default_branch() {
+            if let Some(remote_name) = git::tracking_remote(&default_branch) {
+                if let Some(repo) = Self::repo_from_remote(&remote_name) {
+                    return Some(repo);
+                }
+            }
+        }
+        // 5. Global state.repo
+        self.repo.clone().filter(|s| !s.is_empty())
+    }
+
+    /// Extract owner/repo from a git remote's URL.
+    fn repo_from_remote(remote_name: &str) -> Option<String> {
+        let url = git::remote_url(remote_name).ok()?;
+        crate::github::repo_name_from_url(&url)
     }
 
     /// Resolve the effective global remote (state.remote with fallback to git default).
@@ -335,7 +412,7 @@ impl BranchMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::take_env_lock;
+    use crate::test_support::{CwdGuard, init_git_repo, run_cmd, take_env_lock};
 
     fn sample_state() -> StackState {
         let mut state = StackState::new("main".to_string());
@@ -500,6 +577,11 @@ mod tests {
 
     #[test]
     fn effective_pr_repo_falls_back_to_config() {
+        // Run in a temp repo with no remotes so git fallbacks don't interfere
+        let _guard = take_env_lock();
+        let dir = init_git_repo("pr-repo-config-fallback");
+        let _cwd = CwdGuard::enter(&dir);
+
         let mut state = StackState::new("main".to_string());
         state.repo = Some("config/repo".to_string());
         state.add_branch("feat/a", "main", "aaa", None, None);
@@ -508,6 +590,11 @@ mod tests {
 
     #[test]
     fn effective_pr_repo_none_when_nothing_set() {
+        // Run in a temp repo with no remotes so git fallbacks don't interfere
+        let _guard = take_env_lock();
+        let dir = init_git_repo("pr-repo-none");
+        let _cwd = CwdGuard::enter(&dir);
+
         let mut state = StackState::new("main".to_string());
         state.add_branch("feat/a", "main", "aaa", None, None);
         assert!(state.effective_pr_repo("feat/a").is_none());
@@ -515,6 +602,11 @@ mod tests {
 
     #[test]
     fn effective_pr_repo_skips_empty_config() {
+        // Run in a temp repo with no remotes so git fallbacks don't interfere
+        let _guard = take_env_lock();
+        let dir = init_git_repo("pr-repo-empty-config");
+        let _cwd = CwdGuard::enter(&dir);
+
         let mut state = StackState::new("main".to_string());
         state.repo = Some(String::new());
         state.add_branch("feat/a", "main", "aaa", None, None);
@@ -523,8 +615,79 @@ mod tests {
 
     #[test]
     fn effective_pr_repo_unknown_branch_falls_back_to_config() {
+        // Run in a temp repo with no remotes so git fallbacks don't interfere
+        let _guard = take_env_lock();
+        let dir = init_git_repo("pr-repo-unknown-branch");
+        let _cwd = CwdGuard::enter(&dir);
+
         let mut state = StackState::new("main".to_string());
         state.repo = Some("config/repo".to_string());
         assert_eq!(state.effective_pr_repo("nonexistent").as_deref(), Some("config/repo"));
+    }
+
+    #[test]
+    fn effective_pr_repo_inherits_from_parent_push_remote() {
+        // effective_pr_repo for a child should derive from the parent's
+        // effective push remote URL, not from the parent's pr_repo.
+        let _guard = take_env_lock();
+        let dir = init_git_repo("pr-repo-inherit-parent");
+        let _cwd = CwdGuard::enter(&dir);
+        // Add a remote whose URL resolves to "parent/repo"
+        run_cmd(&dir, "git", &["remote", "add", "myfork", "https://github.com/parent/repo.git"]);
+
+        let mut state = StackState::new("main".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+        state.add_branch("feat/b", "feat/a", "bbb", None, None);
+        state.get_branch_mut("feat/a").unwrap().push_remote = Some("myfork".to_string());
+        // feat/b has no pr_repo or push_remote, should inherit repo from parent's push remote URL
+        assert_eq!(state.effective_pr_repo("feat/b").as_deref(), Some("parent/repo"));
+    }
+
+    #[test]
+    fn effective_pr_repo_inherits_through_chain() {
+        // Grandchild inherits push remote through the chain
+        let _guard = take_env_lock();
+        let dir = init_git_repo("pr-repo-inherit-chain");
+        let _cwd = CwdGuard::enter(&dir);
+        run_cmd(&dir, "git", &["remote", "add", "myfork", "https://github.com/grandparent/repo.git"]);
+
+        let mut state = StackState::new("main".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+        state.add_branch("feat/b", "feat/a", "bbb", None, None);
+        state.add_branch("feat/c", "feat/b", "ccc", None, None);
+        state.get_branch_mut("feat/a").unwrap().push_remote = Some("myfork".to_string());
+        // feat/c → feat/b → feat/a (push_remote=myfork) → repo from myfork URL
+        assert_eq!(state.effective_pr_repo("feat/c").as_deref(), Some("grandparent/repo"));
+    }
+
+    #[test]
+    fn effective_pr_repo_child_override_wins_over_parent() {
+        let mut state = StackState::new("main".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+        state.add_branch("feat/b", "feat/a", "bbb", None, None);
+        // Even if parent has a push_remote, child's explicit pr_repo wins
+        state.get_branch_mut("feat/a").unwrap().push_remote = Some("myfork".to_string());
+        state.get_branch_mut("feat/b").unwrap().pr_repo = Some("child/repo".to_string());
+        assert_eq!(state.effective_pr_repo("feat/b").as_deref(), Some("child/repo"));
+    }
+
+    #[test]
+    fn effective_push_remote_inherits_from_parent() {
+        let mut state = StackState::new("main".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+        state.add_branch("feat/b", "feat/a", "bbb", None, None);
+        state.get_branch_mut("feat/a").unwrap().push_remote = Some("myfork".to_string());
+        // feat/b has no push_remote, should inherit from feat/a
+        assert_eq!(state.effective_push_remote("feat/b"), "myfork");
+    }
+
+    #[test]
+    fn effective_push_remote_child_override_wins_over_parent() {
+        let mut state = StackState::new("main".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+        state.add_branch("feat/b", "feat/a", "bbb", None, None);
+        state.get_branch_mut("feat/a").unwrap().push_remote = Some("parent-remote".to_string());
+        state.get_branch_mut("feat/b").unwrap().push_remote = Some("child-remote".to_string());
+        assert_eq!(state.effective_push_remote("feat/b"), "child-remote");
     }
 }

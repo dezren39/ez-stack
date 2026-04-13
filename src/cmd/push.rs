@@ -340,6 +340,7 @@ pub fn push_or_update_pr(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{CwdGuard, init_git_repo, take_env_lock};
 
     #[test]
     fn stack_ancestors_orders_trunk_closest_first_and_builds_urls() {
@@ -510,6 +511,11 @@ mod tests {
     #[test]
     fn repo_resolution_falls_back_to_config() {
         // No CLI flag, no stored pr_repo: config repo is used
+        // Run in a temp repo with no remotes so git fallbacks don't interfere
+        let _guard = take_env_lock();
+        let dir = init_git_repo("push-repo-config-fallback");
+        let _cwd = CwdGuard::enter(&dir);
+
         let mut state = StackState::new("main".to_string());
         state.repo = Some("config/repo".to_string());
         state.add_branch("feat/a", "main", "aaa", None, None);
@@ -524,6 +530,11 @@ mod tests {
     #[test]
     fn repo_resolution_none_when_nothing_set() {
         // No CLI flag, no stored, no config: None
+        // Run in a temp repo with no remotes so git fallbacks don't interfere
+        let _guard = take_env_lock();
+        let dir = init_git_repo("push-repo-none");
+        let _cwd = CwdGuard::enter(&dir);
+
         let mut state = StackState::new("main".to_string());
         state.add_branch("feat/a", "main", "aaa", None, None);
 
