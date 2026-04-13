@@ -104,6 +104,7 @@ pub fn run(
             resolved_body.as_deref(),
             body_explicitly_set,
             branch_repo_override,
+            false, // force_repoint: submit auto-detects repoint needs
         )?;
 
         let pr_number = state.get_branch(branch).ok().and_then(|m| m.pr_number);

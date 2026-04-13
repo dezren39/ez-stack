@@ -23,6 +23,7 @@ pub fn run(
     commit_message: Option<&str>,
     repo_override: Option<&str>,
     remote_override: Option<&str>,
+    repoint: bool,
 ) -> Result<()> {
     if stack {
         return crate::cmd::submit::run(draft, no_draft, title, body, body_file, repo_override, remote_override);
@@ -156,6 +157,7 @@ pub fn run(
         resolved_body.as_deref(),
         body_explicitly_set,
         repo_override,
+        repoint,
     )?;
 
     let pr_number = state.get_branch(&current).ok().and_then(|m| m.pr_number);
@@ -197,6 +199,7 @@ pub fn push_or_update_pr(
     body_override: Option<&str>,
     body_explicitly_set: bool,
     repo_override: Option<&str>,
+    force_repoint: bool,
 ) -> Result<String> {
     // Normalize repo shorthand (e.g. "fork" → "owner/repo" from remote URL).
     let resolved_override: Option<String> =
@@ -210,6 +213,58 @@ pub fn push_or_update_pr(
     let push_remote = state.effective_push_remote(branch);
 
     let existing_pr = github::get_pr_status_in_repo(branch, effective_repo.as_deref())?;
+
+    // Detect cross-repo repoint: if the parent's PR lives in a different repo than
+    // the current branch's PR, we need to close the old PR and create a new one.
+    // This happens when sync reparents children after a bottom-of-chain merge and
+    // the parent chain now targets a different repo.
+    let (existing_pr, effective_repo) = if let Some(ref pr) = existing_pr {
+        let parent_repo = state.effective_pr_repo(parent);
+        let needs_repoint = force_repoint || {
+            // Compare normalized repos: if both are Some but different, repoint needed.
+            match (&effective_repo, &parent_repo) {
+                (Some(current), Some(target)) => current != target,
+                // PR currently in an explicit repo but parent targets the default repo
+                // (None means "use gh default") — this is a mismatch if branch has pr_repo.
+                (Some(_), None) => state.get_branch(branch).ok().and_then(|m| m.pr_repo.as_ref()).is_some(),
+                _ => false,
+            }
+        };
+        let no_repoint = state.effective_no_repoint(branch);
+        if needs_repoint && !no_repoint {
+            let old_number = pr.number;
+            let old_repo = effective_repo.clone();
+            let old_url = &pr.url;
+            ui::info(&format!(
+                "Repointing PR #{old_number} — closing in {} and recreating in {}",
+                old_repo.as_deref().unwrap_or("default repo"),
+                parent_repo.as_deref().unwrap_or("default repo"),
+            ));
+            if let Err(e) = github::close_pr_in_repo(old_number, old_repo.as_deref()) {
+                ui::warn(&format!(
+                    "Could not close old PR #{old_number} ({old_url}): {e}\n  \
+                     Hint: close it manually and re-run `ez push`"
+                ));
+            }
+            // Clear stored pr_number and pr_repo so we create fresh.
+            let meta = state.get_branch_mut(branch)?;
+            meta.pr_number = None;
+            meta.pr_repo = None;
+            // Fall through to the None (create) path with the parent's repo.
+            (None, parent_repo)
+        } else if needs_repoint && no_repoint {
+            let old_number = pr.number;
+            ui::warn(&format!(
+                "PR #{old_number} for `{branch}` targets a different repo than parent `{parent}` — \
+                 skipped repoint (no_repoint is set). Update manually or use `ez push --repoint`."
+            ));
+            (existing_pr, effective_repo)
+        } else {
+            (existing_pr, effective_repo)
+        }
+    } else {
+        (existing_pr, effective_repo)
+    };
 
     let pr_url = match existing_pr {
         Some(pr) => {
@@ -726,5 +781,64 @@ mod tests {
         // push_or_update_pr only sets pr_repo in the None (new PR) branch
         // Existing PR path just updates pr_number, doesn't touch pr_repo
         assert_eq!(state.get_branch("feat/a").unwrap().pr_repo.as_deref(), Some("original/repo"));
+    }
+
+    #[test]
+    fn repoint_detected_when_branch_and_parent_repos_differ() {
+        // Branch has PR in repo A, parent has PR in repo B → repoint needed
+        let mut state = StackState::new("main".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+        state.add_branch("feat/b", "feat/a", "bbb", None, None);
+        state.get_branch_mut("feat/a").unwrap().pr_repo = Some("upstream/repo".to_string());
+        state.get_branch_mut("feat/b").unwrap().pr_repo = Some("upstream/repo".to_string());
+
+        // Simulate: feat/a merged, feat/b reparented to main. main targets "fork/repo".
+        state.get_branch_mut("feat/b").unwrap().parent = "main".to_string();
+        state.repo = Some("fork/repo".to_string());
+
+        let branch_repo: Option<String> = state.effective_pr_repo("feat/b"); // "upstream/repo"
+        let parent_repo: Option<String> = state.effective_pr_repo("main");   // "fork/repo"
+
+        let needs_repoint = match (&branch_repo, &parent_repo) {
+            (Some(current), Some(target)) => current != target,
+            (Some(_), None) => state.get_branch("feat/b").ok().and_then(|m| m.pr_repo.as_ref()).is_some(),
+            _ => false,
+        };
+        assert!(needs_repoint, "should detect cross-repo mismatch");
+    }
+
+    #[test]
+    fn repoint_not_detected_when_repos_match() {
+        // Branch and parent both in same repo → no repoint
+        let _guard = take_env_lock();
+        let dir = init_git_repo("push-repoint-match");
+        let _cwd = CwdGuard::enter(&dir);
+
+        let mut state = StackState::new("main".to_string());
+        state.repo = Some("upstream/repo".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+        state.add_branch("feat/b", "feat/a", "bbb", None, None);
+        state.get_branch_mut("feat/b").unwrap().pr_repo = Some("upstream/repo".to_string());
+
+        let branch_repo: Option<String> = state.effective_pr_repo("feat/b");
+        let parent_repo: Option<String> = state.effective_pr_repo("feat/a");
+
+        let needs_repoint = match (&branch_repo, &parent_repo) {
+            (Some(current), Some(target)) => current != target,
+            _ => false,
+        };
+        assert!(!needs_repoint, "same repo should not trigger repoint");
+    }
+
+    #[test]
+    fn no_repoint_config_suppresses_repoint() {
+        // Even when repos differ, no_repoint should suppress
+        let mut state = StackState::new("main".to_string());
+        state.add_branch("feat/a", "main", "aaa", None, None);
+        state.get_branch_mut("feat/a").unwrap().pr_repo = Some("upstream/repo".to_string());
+        state.get_branch_mut("feat/a").unwrap().no_repoint = Some(true);
+        state.repo = Some("fork/repo".to_string());
+
+        assert!(state.effective_no_repoint("feat/a"), "should be suppressed");
     }
 }

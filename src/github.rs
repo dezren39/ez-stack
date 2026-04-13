@@ -131,6 +131,20 @@ pub fn update_pr_base_in_repo(pr_number: u64, new_base: &str, repo: Option<&str>
     Ok(())
 }
 
+/// Close an existing PR (e.g. before recreating it in a different repo).
+pub fn close_pr_in_repo(pr_number: u64, repo: Option<&str>) -> Result<()> {
+    let num = pr_number.to_string();
+    let mut args: Vec<&str> = vec!["pr", "close", &num];
+    let repo_arg: String;
+    if let Some(r) = repo {
+        repo_arg = r.to_string();
+        args.push("--repo");
+        args.push(&repo_arg);
+    }
+    run_gh(&args)?;
+    Ok(())
+}
+
 pub fn get_pr_status(branch: &str) -> Result<Option<PrInfo>> {
     get_pr_status_in_repo(branch, None)
 }
