@@ -214,14 +214,14 @@ Examples:
   ez submit --remote fork --repo owner/repo
 
 Note: --draft only affects newly created PRs. Existing PRs are not changed.
---remote and --repo apply to the first (bottom) branch only; children inherit.
-Use `ez ready` to undraft an existing PR.")]
+--no-draft creates new PRs as ready and also marks existing draft PRs ready for review.
+--remote and --repo apply to the first (bottom) branch only; children inherit.")]
     Submit {
         /// Create draft PRs (only affects new PRs, not existing ones)
         #[arg(long)]
         draft: bool,
 
-        /// Override draft config to create ready-for-review PRs
+        /// Override draft config to create ready-for-review PRs and undraft existing draft PRs
         #[arg(long)]
         no_draft: bool,
 
