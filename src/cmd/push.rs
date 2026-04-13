@@ -8,38 +8,6 @@ use crate::github;
 use crate::stack::StackState;
 use crate::ui;
 
-fn stack_ancestors(
-    state: &StackState,
-    branch: &str,
-    repo: &str,
-) -> Vec<crate::stack_body::AncestorPr> {
-    let path = state.path_to_trunk(branch);
-    let len = path.len();
-    if len < 2 {
-        return vec![];
-    }
-
-    path[1..len - 1]
-        .iter()
-        .rev()
-        .map(|b| {
-            let pr_number = state.branches.get(b).and_then(|m| m.pr_number);
-            let pr_url = pr_number.and_then(|n| {
-                if repo.is_empty() {
-                    None
-                } else {
-                    Some(format!("https://github.com/{repo}/pull/{n}"))
-                }
-            });
-            crate::stack_body::AncestorPr {
-                branch: b.clone(),
-                pr_number,
-                pr_url,
-            }
-        })
-        .collect()
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     draft: bool,
@@ -241,15 +209,15 @@ pub fn push_or_update_pr(
     // Resolve the push remote for cross-fork head prefix.
     let push_remote = state.effective_push_remote(branch);
 
-    // Build the full stack tree for the stack section.
-    let tree_roots = crate::stack_body::build_full_tree(state, branch);
-    let stack_tree = crate::stack_body::render_full_tree(&tree_roots);
-
     let existing_pr = github::get_pr_status_in_repo(branch, effective_repo.as_deref())?;
 
     let pr_url = match existing_pr {
         Some(pr) => {
             state.get_branch_mut(branch)?.pr_number = Some(pr.number);
+
+            // Build the full stack tree (PR number already known for existing PRs).
+            let tree_roots = crate::stack_body::build_full_tree(state, branch);
+            let stack_tree = crate::stack_body::render_full_tree(&tree_roots);
 
             // Update PR base only when the stack parent is genuinely an ancestor of this branch.
             if pr.base != parent {
@@ -380,7 +348,9 @@ pub fn push_or_update_pr(
             // Extract references from commit messages if no explicit body.
             let refs_section = extract_references_for_branch(state, branch, parent);
 
-            // Build full ez body with markers.
+            // Build initial body with stack tree (current branch won't have PR link yet).
+            let tree_roots = crate::stack_body::build_full_tree(state, branch);
+            let stack_tree = crate::stack_body::render_full_tree(&tree_roots);
             let body = crate::stack_body::build_ez_body(
                 user_body,
                 Some("Part of a stack managed by `ez`."),
@@ -404,6 +374,20 @@ pub fn push_or_update_pr(
             if let Some(ref r) = resolved_override {
                 state.get_branch_mut(branch)?.pr_repo = Some(r.clone());
             }
+
+            // Now rebuild the tree with the PR number and update the body.
+            let tree_roots = crate::stack_body::build_full_tree(state, branch);
+            let new_stack_tree = crate::stack_body::render_full_tree(&tree_roots);
+            if new_stack_tree != stack_tree {
+                let updated_body = crate::stack_body::build_ez_body(
+                    user_body,
+                    Some("Part of a stack managed by `ez`."),
+                    refs_section.as_deref(),
+                    &new_stack_tree,
+                );
+                let _ = github::edit_pr_in_repo(pr.number, None, Some(&updated_body), effective_repo.as_deref());
+            }
+
             ui::info(&format!("Created PR #{}: {}", pr.number, pr.url));
             pr.url
         }
@@ -521,50 +505,6 @@ pub fn update_contiguous_stack_bodies(state: &StackState, pushed_branch: &str) {
 mod tests {
     use super::*;
     use crate::test_support::{CwdGuard, init_git_repo, take_env_lock};
-
-    #[test]
-    fn stack_ancestors_orders_trunk_closest_first_and_builds_urls() {
-        let mut state = StackState::new("main".to_string());
-        state.add_branch("feat/a", "main", "aaa", None, None);
-        state.add_branch("feat/b", "feat/a", "bbb", None, None);
-        state.add_branch("feat/c", "feat/b", "ccc", None, None);
-        state.get_branch_mut("feat/a").expect("a").pr_number = Some(10);
-        state.get_branch_mut("feat/b").expect("b").pr_number = Some(20);
-
-        let ancestors = stack_ancestors(&state, "feat/c", "org/repo");
-        assert_eq!(ancestors.len(), 2);
-        assert_eq!(ancestors[0].branch, "feat/a");
-        assert_eq!(ancestors[1].branch, "feat/b");
-        assert_eq!(
-            ancestors[0].pr_url.as_deref(),
-            Some("https://github.com/org/repo/pull/10")
-        );
-        assert_eq!(
-            ancestors[1].pr_url.as_deref(),
-            Some("https://github.com/org/repo/pull/20")
-        );
-    }
-
-    #[test]
-    fn stack_ancestors_handles_empty_repo_name() {
-        let mut state = StackState::new("main".to_string());
-        state.add_branch("feat/a", "main", "aaa", None, None);
-        state.add_branch("feat/b", "feat/a", "bbb", None, None);
-        state.get_branch_mut("feat/a").expect("a").pr_number = Some(10);
-
-        let ancestors = stack_ancestors(&state, "feat/b", "");
-        assert_eq!(ancestors.len(), 1);
-        assert!(ancestors[0].pr_url.is_none());
-    }
-
-    #[test]
-    fn stack_ancestors_single_branch_returns_empty() {
-        let mut state = StackState::new("main".to_string());
-        state.add_branch("feat/a", "main", "aaa", None, None);
-
-        let ancestors = stack_ancestors(&state, "feat/a", "org/repo");
-        assert!(ancestors.is_empty(), "branch directly on trunk has no stack ancestors");
-    }
 
     #[test]
     fn draft_resolution_no_draft_flag_wins() {
