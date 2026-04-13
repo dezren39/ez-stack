@@ -312,11 +312,14 @@ pub fn push_or_update_pr(
         }
     } else {
         // No existing PR — this is a fresh create.
-        // For fresh creates, only use CLI override or branch's own stored repo.
-        // Do NOT inherit from parent — the child should create at its default
-        // repo, and repoint only happens later when push detects the mismatch
-        // between where the PR lives and where the parent chain targets.
-        let create_repo = resolved_override.clone().or_else(|| own_pr_repo.clone());
+        // Use CLI override, own stored repo, or fall back to the push remote's
+        // repo. The push remote is where the branch and its parent base ref
+        // were pushed, so that's where the PR can be created.
+        let push_remote_repo = StackState::repo_from_remote(&push_remote);
+        let create_repo = resolved_override
+            .clone()
+            .or_else(|| own_pr_repo.clone())
+            .or(push_remote_repo);
         (existing_pr, create_repo, false)
     };
 
