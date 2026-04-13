@@ -227,7 +227,30 @@ pub fn push_or_update_pr(
     // look in the default gh repo (None). This prevents false lookups in the
     // parent's repo where the PR doesn't exist.
     let lookup_repo = own_pr_repo.clone();
-    let existing_pr = github::get_pr_status_in_repo(branch, lookup_repo.as_deref())?;
+    let mut existing_pr = github::get_pr_status_in_repo(branch, lookup_repo.as_deref())?;
+
+    // Fallback: if the branch has a stored pr_number but no pr_repo, the PR was
+    // created before pr_repo tracking existed. Try the push remote's repo — that's
+    // where the branch was pushed, so it's where the PR most likely lives.
+    if existing_pr.is_none() && own_pr_repo.is_none() {
+        let has_pr_number = state
+            .get_branch(branch)
+            .ok()
+            .and_then(|m| m.pr_number)
+            .is_some();
+        if has_pr_number {
+            let push_remote_repo = StackState::repo_from_remote(&push_remote);
+            if let Some(ref fallback_repo) = push_remote_repo {
+                let fallback_pr =
+                    github::get_pr_status_in_repo(branch, Some(fallback_repo.as_str()))?;
+                if fallback_pr.is_some() {
+                    // Backfill pr_repo so future lookups don't need this fallback.
+                    state.get_branch_mut(branch)?.pr_repo = Some(fallback_repo.clone());
+                    existing_pr = fallback_pr;
+                }
+            }
+        }
+    }
 
     // Detect cross-repo repoint: if the target repo for the new PR differs from
     // where the existing PR lives, close the old and create in the new repo.

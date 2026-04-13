@@ -182,7 +182,7 @@ impl StackState {
     }
 
     /// Extract owner/repo from a git remote's URL.
-    fn repo_from_remote(remote_name: &str) -> Option<String> {
+    pub fn repo_from_remote(remote_name: &str) -> Option<String> {
         let url = git::remote_url(remote_name).ok()?;
         crate::github::repo_name_from_url(&url)
     }
